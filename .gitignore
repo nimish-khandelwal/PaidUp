@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcframework
+build/
+Pods/
+Examples/EntitledSample/EntitledSample.xcodeproj/
+Examples/EntitledSample/EntitledSample/Info.plist

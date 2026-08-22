@@ -1,0 +1,50 @@
+name: Integration help
+description: Entitled builds, but entitlements are not what you expect.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Please read the Troubleshooting article first — it covers "user paid
+        but app still locked", "sandbox renews every 5 minutes and my logic
+        flips", "entitled on iPhone, not on iPad" and "paid on Android, locked
+        on iOS". If you are still stuck, the fields below give us what we need.
+  - type: input
+    id: version
+    attributes:
+      label: Entitled version + installation method
+      placeholder: "0.1.0 via SPM"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: StoreKit environment
+      options:
+        - Xcode StoreKit configuration file
+        - Sandbox (TestFlight or sandbox Apple ID)
+        - Production
+    validations:
+      required: true
+  - type: input
+    id: transaction
+    attributes:
+      label: Transaction ID of the purchase in question
+    validations:
+      required: true
+  - type: textarea
+    id: onerror
+    attributes:
+      label: onError output
+      description: Set `config.onError`, reproduce, paste everything. "It prints nothing" is also an answer — say so.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: What `store.entitlements` prints, and what you expected
+      description: >
+        Paste the set (productID, state, ownership, source). If you use a
+        remote provider, also paste what it returns.
+    validations:
+      required: true

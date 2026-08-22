@@ -1,0 +1,81 @@
+name: Bug report
+description: Something in Entitled is not behaving as documented.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Entitled version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: Installation method
+      placeholder: "SPM / CocoaPods / XCFramework"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: StoreKit environment
+      description: Where did the purchase happen? Behaviour differs a lot between these.
+      options:
+        - Xcode StoreKit configuration file
+        - Sandbox (TestFlight or sandbox Apple ID)
+        - Production
+    validations:
+      required: true
+  - type: input
+    id: transaction
+    attributes:
+      label: Transaction ID (and original transaction ID if different)
+      description: From `Transaction.id` / `Transaction.originalID`, or from App Store Connect. Without it we cannot look at what Apple says about the subscription.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: iOS version(s) affected
+      placeholder: "iOS 17.5 device, iOS 18.5 simulator"
+    validations:
+      required: true
+  - type: input
+    id: xcode
+    attributes:
+      label: Xcode version
+      placeholder: "16.4"
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Your EntitledConfiguration and init call
+      description: Paste the configuration and the `Entitled(products:userID:configuration:)` call (redact IDs if needed).
+      render: swift
+    validations:
+      required: true
+  - type: textarea
+    id: onerror
+    attributes:
+      label: Output of your onError handler
+      description: >
+        If you have not set `config.onError`, set it, reproduce, and paste
+        everything it prints. Most "user paid but app still locked" reports are
+        fully explained by an `unverified` or `remoteProviderFailed` line here.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected vs. what happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps or sample project
+      description: >
+        Include the sequence of purchases / refunds / account switches and
+        whether the app was relaunched in between.

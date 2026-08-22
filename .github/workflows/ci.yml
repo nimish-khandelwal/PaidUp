@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos-tests:
+    name: swift test (macOS, TSan)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Run tests
+        run: swift test
+      - name: Run tests under Thread Sanitizer
+        run: swift test --sanitize=thread
+
+  ios-tests:
+    name: iOS ${{ matrix.destination.os }} (SKTestSession + XCUITest)
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        destination:
+          - { os: '18.5', device: 'iPhone 16' }
+          - { os: '17.5', device: 'iPhone 15' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Install simulator runtime if needed
+        if: matrix.destination.os == '17.5'
+        run: xcodebuild -downloadPlatform iOS -buildVersion 17.5 || true
+      - name: Build package for iOS
+        run: |
+          xcodebuild build \
+            -scheme Entitled \
+            -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
+            -skipPackagePluginValidation \
+            | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}
+      - name: Generate sample project
+        run: cd Examples/EntitledSample && xcodegen generate
+      - name: Sample app tests against the StoreKit configuration
+        run: |
+          xcodebuild test \
+            -project Examples/EntitledSample/EntitledSample.xcodeproj \
+            -scheme EntitledSample \
+            -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
+            -skipPackagePluginValidation \
+            | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}
+
+  pod-lint:
+    name: pod lib lint
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint podspec
+        run: pod lib lint --allow-warnings

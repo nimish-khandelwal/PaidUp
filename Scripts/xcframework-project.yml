@@ -1,0 +1,23 @@
+# XcodeGen spec for a throwaway framework project used only to build the
+# binary EntitledKit.xcframework. SPM packages archive as bare objects, so a
+# framework target is generated around the same sources instead.
+name: EntitledKitFramework
+options:
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  EntitledKit:
+    type: framework
+    platform: iOS
+    sources:
+      - path: ../Sources/EntitledKit
+        excludes:
+          - "Documentation.docc"
+    settings:
+      base:
+        BUILD_LIBRARY_FOR_DISTRIBUTION: "YES"
+        SKIP_INSTALL: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+        PRODUCT_BUNDLE_IDENTIFIER: com.nimishkhandelwal.EntitledKit
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
