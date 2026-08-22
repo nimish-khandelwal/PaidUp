@@ -37,11 +37,26 @@ final class StoreKitSessionTests: XCTestCase {
         }
     }
 
-    private func makeStore(onError: (@Sendable (PaidUpError) -> Void)? = nil) -> PaidUp {
+    private func makeStore(
+        remoteProvider: (any EntitlementProvider)? = nil,
+        refreshOnForeground: Bool = true,
+        onError: (@Sendable (PaidUpError) -> Void)? = nil
+    ) -> PaidUp {
         var config = PaidUpConfiguration.default
         config.storageDirectory = directory
+        config.remoteProvider = remoteProvider
+        config.refreshOnForeground = refreshOnForeground
         config.onError = onError
         return PaidUp(products: ["pro.monthly", "pro.yearly", "lifetime"], userID: userID, configuration: config)
+    }
+
+    private func assertNothingUnfinished(file: StaticString = #filePath, line: UInt = #line) async {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        for await result in Transaction.unfinished {
+            if case .verified(let tx) = result {
+                XCTFail("transaction \(tx.id) (\(tx.productID)) left unfinished", file: file, line: line)
+            }
+        }
     }
 
     private func waitUntil(
@@ -84,9 +99,7 @@ final class StoreKitSessionTests: XCTestCase {
             }
         }
         XCTAssertEqual(tokens, [userID])
-
-        let unfinished = session.allTransactions().filter { $0.state == .purchased }
-        XCTAssertEqual(unfinished.count, 1)
+        await assertNothingUnfinished()
     }
 
     func testPurchaseIsVisibleToAFreshInstanceOnNextLaunch() async throws {
@@ -96,7 +109,11 @@ final class StoreKitSessionTests: XCTestCase {
         }
         let second = makeStore()
         XCTAssertTrue(second.isEntitled(to: "lifetime"), "cache answers before StoreKit does")
-        try await waitUntil { second.entitlements.first?.state == .lifetime }
+        let stream = second.updates
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next()
+        XCTAssertTrue(second.isEntitled(to: "lifetime"))
+        await assertNothingUnfinished()
     }
 
     func testExpiredSubscriptionIsNotEntitled() async throws {
@@ -141,6 +158,7 @@ final class StoreKitSessionTests: XCTestCase {
 
         try await waitUntil { !store.isEntitled(to: "lifetime") }
         XCTAssertTrue(store.entitlements.isEmpty)
+        await assertNothingUnfinished()
     }
 
     func testAskToBuyIsPendingThenArrivesViaUpdates() async throws {
@@ -156,6 +174,7 @@ final class StoreKitSessionTests: XCTestCase {
         try session.approveAskToBuyTransaction(identifier: pending.identifier)
 
         try await waitUntil { store.isEntitled(to: "pro.yearly") }
+        await assertNothingUnfinished()
     }
 
     func testRestoreFindsPurchaseMadeOutsideTheSDK() async throws {
@@ -167,6 +186,63 @@ final class StoreKitSessionTests: XCTestCase {
         }
         XCTAssertTrue(set.contains { $0.productID == "lifetime" })
         XCTAssertTrue(store.isEntitled(to: "lifetime"))
+        await assertNothingUnfinished()
+    }
+
+    func testRestoreAfterClearingTransactionsRemovesEntitlementAndCache() async throws {
+        let store = makeStore()
+        guard case .success = await store.purchase("lifetime") else {
+            return XCTFail("purchase failed")
+        }
+        session.clearTransactions()
+        let result = await store.restore()
+        guard case .restored(let set) = result else {
+            return XCTFail("expected restored, got \(result)")
+        }
+        XCTAssertTrue(set.isEmpty)
+        XCTAssertFalse(store.isEntitled(to: "lifetime"))
+
+        let fresh = makeStore()
+        XCTAssertFalse(fresh.isEntitled(to: "lifetime"), "cache was replaced by the StoreKit answer")
+    }
+
+    func testForegroundRefreshCallsProviderOnlyWhenEnabled() async throws {
+        let enabled = CountingProvider()
+        let disabled = CountingProvider()
+        let on = makeStore(remoteProvider: enabled, refreshOnForeground: true)
+        let off = makeStore(remoteProvider: disabled, refreshOnForeground: false)
+        try await waitUntil { enabled.callCount == 1 && disabled.callCount == 1 }
+
+        await MainActor.run {
+            NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        }
+        try await waitUntil { enabled.callCount == 2 }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(disabled.callCount, 1)
+        _ = (on, off)
+    }
+
+    func testSimulatedPurchaseNotAllowedIsTyped() async throws {
+        try await session.setSimulatedError(.purchase(.purchaseNotAllowed), forAPI: .purchase)
+        let store = makeStore()
+        let result = await store.purchase("lifetime")
+        guard case .failed(.purchaseNotAllowed) = result else {
+            return XCTFail("expected purchaseNotAllowed, got \(result)")
+        }
+        XCTAssertFalse(store.isEntitled(to: "lifetime"))
+    }
+
+    func testSimulatedLoadProductsFailureIsProductNotFound() async throws {
+        try await session.setSimulatedError(.generic(.networkError(URLError(.notConnectedToInternet))), forAPI: .loadProducts)
+        let store = makeStore()
+        let result = await store.purchase("lifetime")
+        guard case .failed(let error) = result else {
+            return XCTFail("expected failure, got \(result)")
+        }
+        switch error {
+        case .productNotFound, .storeKit: break
+        default: XCTFail("unexpected error \(error)")
+        }
     }
 
     func testUpgradeKeepsGroupEntitled() async throws {
@@ -182,6 +258,28 @@ final class StoreKitSessionTests: XCTestCase {
         try await waitUntil(pokeForeground: true) { !store.isEntitled(to: "pro.monthly") }
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
         XCTAssertTrue(store.isEntitled(toGroup: "21000001"))
+        await assertNothingUnfinished()
+    }
+
+    func testGroupStaysEntitledThroughoutUpgrade() async throws {
+        let store = makeStore()
+        guard case .success = await store.purchase("pro.monthly") else {
+            return XCTFail("monthly purchase failed")
+        }
+        let stream = store.updates
+        let seen = SetLog()
+        let consumer = Task {
+            for await set in stream { seen.append(set) }
+        }
+        guard case .success = await store.purchase("pro.yearly") else {
+            return XCTFail("yearly purchase failed")
+        }
+        try await waitUntil(pokeForeground: true) { !store.isEntitled(to: "pro.monthly") }
+        consumer.cancel()
+        XCTAssertFalse(seen.values.isEmpty)
+        for set in seen.values {
+            XCTAssertTrue(set.contains { $0.subscriptionGroupID == "21000001" }, "group dropped mid-upgrade: \(set)")
+        }
     }
 
     func testUpdatesStreamDrivesUI() async throws {
@@ -199,5 +297,40 @@ final class StoreKitSessionTests: XCTestCase {
         }
         await fulfillment(of: [gotEntitled], timeout: 10)
         consumer.cancel()
+    }
+}
+
+final class CountingProvider: EntitlementProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    func currentEntitlements() async throws -> Set<String> {
+        lock.lock()
+        calls += 1
+        lock.unlock()
+        return []
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
+    }
+}
+
+final class SetLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Set<Entitlement>] = []
+
+    func append(_ value: Set<Entitlement>) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+
+    var values: [Set<Entitlement>] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

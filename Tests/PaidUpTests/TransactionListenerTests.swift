@@ -54,13 +54,100 @@ final class TransactionListenerTests: XCTestCase {
         let client = FakeStoreKitClient()
         client.setCurrentEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
         let directory = try makeTemporaryDirectory()
-        for _ in 0..<20 {
+        var engines: [WeakEngine] = []
+        for i in 0..<20 {
             let store = try makeStore(client: client, directory: directory)
+            engines.append(WeakEngine(store.engine))
+            if i.isMultiple(of: 3) {
+                continue
+            }
             await store.startupTask.value
-            _ = store.updates
+            let stream = store.updates
+            let consumer = Task { for await _ in stream {} }
             XCTAssertTrue(store.isEntitled(to: "pro.monthly"))
+            if i.isMultiple(of: 2) { consumer.cancel() }
         }
         try await waitUntil { client.updateListenerCount == 0 }
+        try await waitUntil { engines.allSatisfy { $0.engine == nil } }
+    }
+
+    func testUnfinishedTransactionsReplayedOnSubscribeAreFinishedOnce() async throws {
+        let client = FakeStoreKitClient()
+        let current = client.makeTransaction(id: 1, productID: "pro.monthly")
+        let revoked = client.makeTransaction(id: 2, productID: "pro.yearly", revoked: Date())
+        client.setCurrentEntitlements([current])
+        client.setReplayedUpdates([.verified(current), .verified(revoked)])
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+        try await waitUntil { Set(client.finishedTransactionIDs) == [1, 2] }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(client.finishedTransactionIDs.count, 2)
+        XCTAssertTrue(store.isEntitled(to: "pro.monthly"))
+        XCTAssertFalse(store.isEntitled(to: "pro.yearly"))
+    }
+
+    func testUnverifiedUpdateIsReportedWithoutRecompute() async throws {
+        let client = FakeStoreKitClient()
+        client.setCurrentEntitlements([])
+        let log = ErrorLog()
+        let store = try makeStore(client: client) { $0.onError = log.handler }
+        await store.startupTask.value
+        let reads = client.currentEntitlementsCallCount
+
+        client.emitTransactionUpdate(.unverified(productID: "pro.monthly"))
+        try await waitUntil { !log.errors.isEmpty }
+        guard case .unverified("pro.monthly")? = log.errors.first else {
+            return XCTFail("expected unverified, got \(log.errors)")
+        }
+        XCTAssertFalse(store.isEntitled(to: "pro.monthly"))
+        XCTAssertEqual(client.currentEntitlementsCallCount, reads)
+    }
+
+    func testPurchaseInFlightSurvivesDeinitAndStillFinishes() async throws {
+        let client = FakeStoreKitClient()
+        client.setCurrentEntitlements([])
+        let gate = AsyncGate(open: false)
+        let tx = client.makeTransaction(id: 7, productID: "lifetime", kind: .nonConsumable)
+        client.purchaseHandler = { _, _ in
+            await gate.wait()
+            return .success(.verified(tx))
+        }
+        var purchaseTask: Task<PurchaseResult, Never>?
+        weak var weakEngine: EntitlementEngine?
+        do {
+            let store = try makeStore(client: client)
+            await store.startupTask.value
+            weakEngine = store.engine
+            let engine = store.engine
+            purchaseTask = Task { await engine.purchase("lifetime") }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try await waitUntil { client.updateListenerCount == 0 }
+        XCTAssertNotNil(weakEngine, "engine stays alive while a purchase is in flight")
+        gate.open()
+        let result = await purchaseTask!.value
+        guard case .pending = result else {
+            return XCTFail("expected pending after shutdown, got \(result)")
+        }
+        XCTAssertEqual(client.finishedTransactionIDs, [7])
+        try await waitUntil { weakEngine == nil }
+    }
+
+    func testUnconsumedStreamKeepsOnlyLatestValue() async throws {
+        let client = FakeStoreKitClient()
+        client.setCurrentEntitlements([])
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+        let stream = store.updates
+
+        for id in 1...3 as ClosedRange<UInt64> {
+            let tx = client.makeTransaction(id: id, productID: "pro.monthly", expires: Date().addingTimeInterval(Double(id) * 100))
+            client.setCurrentEntitlements([tx])
+            await store.engine.refreshAll()
+        }
+        var iterator = stream.makeAsyncIterator()
+        let latest = await iterator.next()
+        XCTAssertEqual(latest, store.entitlements)
     }
 
     func testUpdatesEmitsCurrentThenChangesAndDedupes() async throws {
@@ -128,18 +215,73 @@ final class TransactionListenerTests: XCTestCase {
         tb.cancel()
     }
 
-    func testCancelledConsumerIsRemoved() async throws {
-        let client = FakeStoreKitClient()
-        client.setCurrentEntitlements([])
-        let store = try makeStore(client: client)
-        await store.startupTask.value
-        let stream = store.updates
+    func testCancelledConsumerIsRemovedFromBroadcaster() async throws {
+        let broadcaster = EntitlementBroadcaster()
+        let stream = broadcaster.makeStream()
+        XCTAssertEqual(broadcaster.subscriberCount, 1)
         let task = Task { for await _ in stream {} }
         try await Task.sleep(nanoseconds: 20_000_000)
         task.cancel()
         _ = await task.value
-        try await Task.sleep(nanoseconds: 20_000_000)
-        XCTAssertEqual(store.entitlements, [])
+        try await waitUntil { broadcaster.subscriberCount == 0 }
+        let entitlement = Entitlement(productID: "x", subscriptionGroupID: nil, expirationDate: nil,
+                                      state: .lifetime, ownership: .purchased, source: .storeKit)
+        XCTAssertTrue(broadcaster.replace(with: [entitlement]))
+        XCTAssertEqual(broadcaster.current, [entitlement])
+    }
+
+    func testStreamInitialValueIsNeverStale() async throws {
+        let broadcaster = EntitlementBroadcaster()
+        let a = Entitlement(productID: "a", subscriptionGroupID: nil, expirationDate: nil,
+                            state: .lifetime, ownership: .purchased, source: .storeKit)
+        let b = Entitlement(productID: "b", subscriptionGroupID: nil, expirationDate: nil,
+                            state: .lifetime, ownership: .purchased, source: .storeKit)
+        let writer = Task.detached {
+            for i in 0..<2000 {
+                broadcaster.replace(with: i.isMultiple(of: 2) ? [a] : [b])
+            }
+        }
+        for _ in 0..<200 {
+            let stream = broadcaster.makeStream()
+            var iterator = stream.makeAsyncIterator()
+            let first = await iterator.next()
+            XCTAssertNotNil(first)
+        }
+        await writer.value
+        let final = broadcaster.current
+        let stream = broadcaster.makeStream()
+        var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next()
+        XCTAssertEqual(first, final)
+    }
+}
+
+final class WeakEngine {
+    weak var engine: EntitlementEngine?
+    init(_ engine: EntitlementEngine) { self.engine = engine }
+}
+
+extension TransactionListenerTests {
+    func testBurstOfUpdatesCoalescesIntoFewRefreshes() async throws {
+        let client = FakeStoreKitClient()
+        client.currentEntitlementsGate.close()
+        client.setCurrentEntitlements([])
+        let store = try makeStore(client: client)
+        try await waitUntil { client.updateListenerCount == 1 }
+
+        let tx = client.makeTransaction(id: 1, productID: "pro.monthly")
+        client.setCurrentEntitlements([tx])
+        for _ in 0..<25 {
+            client.emitTransactionUpdate(.verified(tx))
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        client.currentEntitlementsGate.open()
+        await store.startupTask.value
+        try await waitUntil { store.isEntitled(to: "pro.monthly") }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertLessThanOrEqual(client.currentEntitlementsCallCount, 3)
+        XCTAssertEqual(client.finishedTransactionIDs, [1])
     }
 }
 

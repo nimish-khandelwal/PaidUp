@@ -1,13 +1,14 @@
 Pod::Spec.new do |s|
   s.name             = 'PaidUp'
   s.version          = '0.1.0'
-  s.summary          = 'A lightweight StoreKit 2 entitlement layer for iOS.'
+  s.summary          = 'A lightweight StoreKit 2 entitlement layer for iOS (macOS only for tests).'
   s.description      = <<-DESC
     PaidUp answers "what is this user entitled to right now" from StoreKit 2,
     keeps that answer correct over time (renewals, refunds, revocations,
     Ask to Buy, grace periods, Family Sharing, upgrades), caches it to disk so
     the first frame is right, and exposes it as one value plus an AsyncStream —
-    behind a four-symbol public API. Optional provider hook merges your
+    behind a four-call public API (init, isEntitled/entitlements, updates,
+    purchase + restore). Optional provider hook merges your
     backend's view for cross-platform purchases.
   DESC
   s.homepage         = 'https://github.com/nimish-khandelwal/PaidUp'

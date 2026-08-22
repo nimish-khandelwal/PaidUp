@@ -45,7 +45,7 @@ final class PurchaseRestoreTests: XCTestCase {
         XCTAssertEqual(provider.callCount, 1)
 
         _ = await store.purchase("pro.yearly")
-        XCTAssertEqual(provider.callCount, 2)
+        try await waitUntil { provider.callCount == 2 }
     }
 
     func testUserCancelled() async throws {

@@ -45,10 +45,13 @@ final class SubscribeFlowUITests: XCTestCase {
         app.launchArguments = []
         app.launch()
 
+        XCTAssertTrue(subscribe.waitForExistence(timeout: 10), "app relaunched")
         let gone = expectation(
             for: NSPredicate(format: "exists == false"),
             evaluatedWith: badge
         )
         wait(for: [gone], timeout: 15)
+        XCTAssertTrue(app.staticTexts["entitlementsLabel"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["entitlementsLabel"].label.contains("pro.monthly"))
     }
 }

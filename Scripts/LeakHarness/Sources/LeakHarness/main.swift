@@ -34,7 +34,12 @@ final class HarnessStoreKitClient: StoreKitClient, @unchecked Sendable {
         c.onTermination = { [weak self] _ in _ = self?.withLock { self?.continuations[id] = nil } }
         return s
     }
-    func renewalState(for transaction: VerifiedTransaction) async -> RenewalState? { .subscribed }
+    func unfinishedTransactions() -> AsyncStream<TransactionEvent> {
+        AsyncStream { $0.finish() }
+    }
+    func renewalStates(for transactions: [VerifiedTransaction]) async -> [UInt64: RenewalState] {
+        transactions.reduce(into: [:]) { $0[$1.id] = .subscribed }
+    }
     func purchase(_ id: String, appAccountToken: UUID?) async throws -> PurchaseOutcome {
         .success(.verified(tx(3, id, .autoRenewable)))
     }

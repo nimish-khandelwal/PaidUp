@@ -35,5 +35,6 @@ xcodebuild -create-xcframework \
 
 (cd "$OUT" && zip -r -q PaidUpKit.xcframework.zip PaidUpKit.xcframework)
 echo "Done: $OUT/PaidUpKit.xcframework.zip"
+VERSION=$(sed -n "s/.*s.version *= *'\(.*\)'.*/\1/p" PaidUp.podspec)
 echo "Attach it to the GitHub release, e.g.:"
-echo "  gh release upload v0.1.0 $OUT/PaidUpKit.xcframework.zip"
+echo "  gh release upload v$VERSION $OUT/PaidUpKit.xcframework.zip"

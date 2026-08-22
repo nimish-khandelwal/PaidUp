@@ -29,11 +29,10 @@ final class EntitlementBroadcaster: @unchecked Sendable {
             return false
         }
         value = new
-        let targets = Array(continuations.values)
-        lock.unlock()
-        for continuation in targets {
+        for continuation in continuations.values {
             continuation.yield(new)
         }
+        lock.unlock()
         return true
     }
 
@@ -43,14 +42,13 @@ final class EntitlementBroadcaster: @unchecked Sendable {
             of: Set<Entitlement>.self,
             bufferingPolicy: .bufferingNewest(1)
         )
-        lock.lock()
-        continuations[id] = continuation
-        let initial = value
-        lock.unlock()
-        continuation.yield(initial)
         continuation.onTermination = { [weak self] _ in
             self?.remove(id)
         }
+        lock.lock()
+        continuations[id] = continuation
+        continuation.yield(value)
+        lock.unlock()
         return stream
     }
 

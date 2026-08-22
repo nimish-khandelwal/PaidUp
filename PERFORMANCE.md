@@ -11,10 +11,10 @@ xcrun clang -dynamiclib -o libPaidUpKit.dylib .build/release/PaidUpKit.build/*.o
   -L"$(xcrun --show-sdk-path)/usr/lib/swift" \
   -L"$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx"
 strip -x libPaidUpKit.dylib
-du -k libPaidUpKit.dylib   # → 248 KB
+du -k libPaidUpKit.dylib   # → 264 KB
 ```
 
-**~248 KB** as a stripped dynamic library. Statically linked into a host app
+**~264 KB** as a stripped dynamic library. Statically linked into a host app
 (the SPM default), the linker dead-strips unused paths, so the real
 contribution to a host binary is lower. Zero third-party dependencies; the
 only frameworks touched are Foundation, StoreKit, and (on iOS) UIKit for the
@@ -25,18 +25,22 @@ relocation and symbol overhead the linker removes):
 
 | Object | KB |
 | --- | --- |
-| EntitlementEngine | 276 |
-| LiveStoreKitClient | 120 |
+| EntitlementEngine | 348 |
+| LiveStoreKitClient | 132 |
 | Entitlement | 104 |
-| PaidUp | 88 |
-| EntitlementDiskCache | 76 |
-| StoreKitClient + ProductInfo + VerifiedTransaction + PurchaseOutcome | 68 |
+| PaidUp | 84 |
+| EntitlementDiskCache | 84 |
 | EntitlementBroadcaster | 56 |
+| ProductInfo | 36 |
 | PaidUpConfiguration | 36 |
+| VerifiedTransaction | 32 |
+| PurchaseOutcome | 32 |
 | PaidUpError | 32 |
-| PurchaseResult + RestoreResult | 24 |
-| AppForegroundObserver | 12 |
+| PurchaseResult | 20 |
+| RestoreResult | 16 |
+| StoreKitClient | 12 |
 | EntitlementProvider | 12 |
+| AppForegroundObserver | 12 |
 
 ## Memory / ARC
 
@@ -48,7 +52,14 @@ Design properties, verified by the test suite and the Thread Sanitizer:
   and the foreground observer also capture `weak`.
 - **Deallocation mid-purchase is safe.** The `purchase()` continuation holds
   the actor alive until StoreKit answers, the transaction is finished, and
-  the result is returned; nothing is left unfinished.
+  the result is returned; nothing is left unfinished
+  (`testPurchaseInFlightSurvivesDeinitAndStillFinishes`).
+- **Deallocation mid-read is safe.** A `currentEntitlements` pass that is
+  cancelled by shutdown discards its partial result instead of publishing or
+  caching it (`testDeinitMidStoreKitReadDoesNotTruncateCache`).
+- **Bursts coalesce.** N `Transaction.updates` events arriving while a
+  recompute is running cost at most one more full recompute, not N
+  (`testBurstOfUpdatesCoalescesIntoFewRefreshes`).
 - **`isEntitled` cost at the call site** is one `NSLock` acquire and a set
   scan — no `await`, no disk, no StoreKit. `testConcurrentReadsFromManyQueuesWhileMutating`
   reads 4,000 times from 8 concurrent queues while the actor recomputes 200
@@ -67,7 +78,7 @@ remote provider, half of them leaving an `updates` consumer un-cancelled.
 $ cd Scripts/LeakHarness && swift build -c release -Xswiftc -enable-testing
 $ leaks --atExit -- ./.build/release/LeakHarness
 listeners remaining: 0
-Process 77894: 0 leaks for 0 total leaked bytes.
+Process 87844: 0 leaks for 0 total leaked bytes.
 ```
 
 **Zero leaks, zero leaked bytes** across 50 `PaidUp` lifecycles, and the
@@ -76,9 +87,9 @@ listener task was cancelled when its instance died.
 
 Memory footprint of the same run (`/usr/bin/time -l`, arm64 release):
 
-- peak memory footprint: **4.3 MB** for the whole process — Swift runtime
+- peak memory footprint: **4.0 MB** for the whole process — Swift runtime
   and harness included
-- maximum resident set size: 13.3 MB
+- maximum resident set size: 13.0 MB
 
 To reproduce in the GUI instead: profile `Examples/PaidUpSample` under
 **Instruments → Leaks + Allocations**, tap *Subscribe*, background and
@@ -87,6 +98,9 @@ baseline after each refresh, and only the cache file persists.
 
 ## Thread Sanitizer
 
-`swift test --sanitize=thread` runs the full suite — including the 8-queue
-concurrent read test and the concurrent purchase/restore/update test — and
-is clean as of 0.1.0. CI enforces this on every push.
+`swift test --sanitize=thread` and `swift test --sanitize=address` run the
+full suite — including the 8-queue concurrent read test, the concurrent
+purchase/restore/update test and the broadcaster stale-initial-value race
+test — and are clean as of 0.1.0. `swift build -Xswiftc
+-strict-concurrency=complete` produces zero warnings. CI enforces TSan on
+every push.

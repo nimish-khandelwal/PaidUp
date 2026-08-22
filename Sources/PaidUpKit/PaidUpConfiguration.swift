@@ -22,7 +22,7 @@ public struct PaidUpConfiguration: Sendable {
     public var remoteProvider: (any EntitlementProvider)?
 
     /// Seconds to wait for the remote provider before giving up and keeping
-    /// the last good remote set. Default: 10.
+    /// the last good remote set. Clamped to 0.1...3600. Default: 10.
     public var remoteTimeout: TimeInterval
 
     /// Re-read StoreKit and the remote provider whenever the app returns to
@@ -30,7 +30,8 @@ public struct PaidUpConfiguration: Sendable {
     public var refreshOnForeground: Bool
 
     /// Directory for the on-disk cache. `nil` uses
-    /// `Application Support/PaidUp/<bundle-id>`. Default: `nil`.
+    /// `Application Support/PaidUp/<bundle-id>/<userID or "anonymous">`, so
+    /// switching accounts never shows the previous user's cache. Default: `nil`.
     public var storageDirectory: URL?
 
     /// Called on an arbitrary queue whenever something fails in the
@@ -49,7 +50,7 @@ public struct PaidUpConfiguration: Sendable {
         onError: (@Sendable (PaidUpError) -> Void)? = nil
     ) {
         self.remoteProvider = remoteProvider
-        self.remoteTimeout = max(0.1, remoteTimeout)
+        self.remoteTimeout = min(3600, max(0.1, remoteTimeout.isFinite ? remoteTimeout : 3600))
         self.refreshOnForeground = refreshOnForeground
         self.storageDirectory = storageDirectory
         self.onError = onError

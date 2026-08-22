@@ -78,7 +78,11 @@ PaidUp is **just the entitlement layer**. Not a paywall, not a backend.
 pod 'PaidUp', '~> 0.1'
 ```
 
-**Binary** — `PaidUpKit.xcframework.zip` is attached to each GitHub release.
+**Binary** — `PaidUpKit.xcframework.zip` is attached to each tagged GitHub
+release (built with `Scripts/build-xcframework.sh`).
+
+macOS 12 is declared only so the pure-logic tests run under `swift test`; the
+SDK targets iOS.
 
 ## Using it
 
@@ -97,7 +101,7 @@ for await set in store.updates { render(set) }
 switch await store.purchase("pro.yearly") {
 case .success(let entitlement): …
 case .userCancelled: …
-case .pending: …                       // Ask to Buy; arrives via `updates` later
+case .pending: …                       // Ask to Buy / deferred; arrives via `updates` later
 case .failed(let error): …             // PaidUpError
 }
 await store.restore()                   // user-initiated button only
@@ -142,7 +146,7 @@ var config = PaidUpConfiguration.default
 config.remoteProvider = MyBackendProvider()   // optional (default nil)
 config.remoteTimeout = 5                      // seconds (default 10)
 config.refreshOnForeground = true             // default true
-config.storageDirectory = nil                 // default App Support/PaidUp/<bundle-id>
+config.storageDirectory = nil                 // default App Support/PaidUp/<bundle-id>/<userID>
 config.onError = { error in print(error) }    // set this!
 ```
 
@@ -157,9 +161,10 @@ requests, any backend.
 
 ## Testing
 
-- `swift test` — 52 tests on a scripted StoreKit fake: the state table, the
-  merge rule, the cache, purchase/restore, listener lifecycle, concurrent
-  reads from 8 queues. Clean under `--sanitize=thread`.
+- `swift test` — 77 tests on a scripted StoreKit fake: the state table, the
+  merge rule, the cache (including shutdown mid-read), purchase/restore,
+  listener lifecycle, concurrent reads from 8 queues. Clean under
+  `--sanitize=thread` and `--sanitize=address`.
 - `Examples/PaidUpSample` — SwiftUI app with a checked-in
   `PaidUp.storekit`, an `SKTestSession` suite (purchase, expiry,
   accelerated renewals, refund, Ask to Buy, restore, upgrade) and an XCUITest
@@ -174,7 +179,7 @@ requests, any backend.
 - **Sandbox renews every 5 minutes and my logic flips?** Each renewal changes
   `expirationDate`, so `updates` emits a new set — still entitled. Drive UI
   from `isEntitled`, not set equality.
-- **PaidUp on iPhone, not on iPad?** Same Apple ID → foreground or
+- **Entitled on iPhone, not on iPad?** Same Apple ID → foreground or
   `restore()`. Different Apple ID → that's the App Store, use Family Sharing.
 - **Paid on Android, locked on iOS?** You need the remote provider.
 

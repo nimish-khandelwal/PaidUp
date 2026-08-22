@@ -15,21 +15,24 @@ import XCTest
 final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
     private let lock = NSLock()
     private var entitlementEvents: [TransactionEvent] = []
+    private var unfinishedEvents: [TransactionEvent] = []
+    private var replayedUpdates: [TransactionEvent] = []
     private var updateContinuations: [UUID: AsyncStream<TransactionEvent>.Continuation] = [:]
     private var finishLog: [UInt64] = []
     private var tokensLog: [UUID?] = []
     private var syncCalls = 0
     private var productsCalls = 0
+    private var currentEntitlementsCalls = 0
 
     var catalog: [ProductInfo] = [
         ProductInfo(id: "pro.monthly", kind: .autoRenewable, subscriptionGroupID: "group.pro"),
         ProductInfo(id: "pro.yearly", kind: .autoRenewable, subscriptionGroupID: "group.pro"),
         ProductInfo(id: "lifetime", kind: .nonConsumable, subscriptionGroupID: nil),
     ]
-    var renewalStates: [String: RenewalState] = [:]
+    var renewalStateByProductID: [String: RenewalState] = [:]
     var productsError: Error?
     var syncError: Error?
-    var purchaseHandler: @Sendable (String, UUID?) throws -> PurchaseOutcome = { _, _ in .userCancelled }
+    var purchaseHandler: @Sendable (String, UUID?) async throws -> PurchaseOutcome = { _, _ in .userCancelled }
     let currentEntitlementsGate = AsyncGate(open: true)
 
     func products(for ids: Set<String>) async throws -> [ProductInfo] {
@@ -42,6 +45,7 @@ final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
     }
 
     func currentEntitlements() -> AsyncStream<TransactionEvent> {
+        withLock { currentEntitlementsCalls += 1 }
         let gate = currentEntitlementsGate
         return AsyncStream { continuation in
             Task {
@@ -55,12 +59,26 @@ final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
         }
     }
 
+    func unfinishedTransactions() -> AsyncStream<TransactionEvent> {
+        let events = withLock { unfinishedEvents }
+        return AsyncStream { continuation in
+            for event in events {
+                continuation.yield(event)
+            }
+            continuation.finish()
+        }
+    }
+
     func transactionUpdates() -> AsyncStream<TransactionEvent> {
         let id = UUID()
         let (stream, continuation) = AsyncStream.makeStream(of: TransactionEvent.self)
         lock.lock()
         updateContinuations[id] = continuation
+        let replay = replayedUpdates
         lock.unlock()
+        for event in replay {
+            continuation.yield(event)
+        }
         continuation.onTermination = { [weak self] _ in
             guard let self else { return }
             self.lock.lock()
@@ -70,16 +88,20 @@ final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
         return stream
     }
 
-    func renewalState(for transaction: VerifiedTransaction) async -> RenewalState? {
-        withLock { renewalStates[transaction.productID] }
+    func renewalStates(for transactions: [VerifiedTransaction]) async -> [UInt64: RenewalState] {
+        withLock {
+            transactions.reduce(into: [:]) { result, tx in
+                result[tx.id] = renewalStateByProductID[tx.productID]
+            }
+        }
     }
 
     func purchase(_ id: String, appAccountToken: UUID?) async throws -> PurchaseOutcome {
-        let handler = withLock { () -> @Sendable (String, UUID?) throws -> PurchaseOutcome in
+        let handler = withLock { () -> @Sendable (String, UUID?) async throws -> PurchaseOutcome in
             tokensLog.append(appAccountToken)
             return purchaseHandler
         }
-        return try handler(id, appAccountToken)
+        return try await handler(id, appAccountToken)
     }
 
     func sync() async throws {
@@ -98,6 +120,18 @@ final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
 
     func setCurrentEntitlements(_ transactions: [VerifiedTransaction]) {
         setCurrentEntitlementEvents(transactions.map { .verified($0) })
+    }
+
+    func setReplayedUpdates(_ events: [TransactionEvent]) {
+        lock.lock()
+        replayedUpdates = events
+        lock.unlock()
+    }
+
+    func setUnfinishedTransactions(_ transactions: [VerifiedTransaction]) {
+        lock.lock()
+        unfinishedEvents = transactions.map { .verified($0) }
+        lock.unlock()
     }
 
     func setCurrentEntitlementEvents(_ events: [TransactionEvent]) {
@@ -155,6 +189,12 @@ final class FakeStoreKitClient: StoreKitClient, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return tokensLog
+    }
+
+    var currentEntitlementsCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentEntitlementsCalls
     }
 
     var syncCallCount: Int {

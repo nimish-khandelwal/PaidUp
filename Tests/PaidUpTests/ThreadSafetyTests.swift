@@ -71,9 +71,12 @@ final class ThreadSafetyTests: XCTestCase {
                 }
             }
         }
-        try await Task.sleep(nanoseconds: 100_000_000)
+        let sentinel = client.makeTransaction(id: 2, productID: "lifetime", kind: .nonConsumable)
+        client.setCurrentEntitlements([tx, sentinel])
+        client.emitTransactionUpdate(.verified(sentinel))
+        try await waitUntil { client.finishedTransactionIDs.contains(2) }
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
-        XCTAssertEqual(client.finishedTransactionIDs, [1])
+        XCTAssertEqual(client.finishedTransactionIDs, [1, 2])
     }
 
     func testBroadcasterIsThreadSafeUnderContention() {

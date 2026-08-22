@@ -13,8 +13,9 @@ public enum PurchaseResult: Sendable {
     case success(Entitlement)
     /// The user dismissed the payment sheet.
     case userCancelled
-    /// Waiting on Ask to Buy or an SCA challenge. If approved later, the
-    /// entitlement arrives through ``PaidUp/updates`` automatically.
+    /// StoreKit accepted the purchase but the user is not entitled yet: Ask
+    /// to Buy, an SCA challenge, or a deferred change. When it takes effect
+    /// the entitlement arrives through ``PaidUp/updates`` automatically.
     case pending
     case failed(PaidUpError)
 }

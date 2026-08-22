@@ -39,7 +39,7 @@ still entitled. Derive your UI from `isEntitled(...)` or `!set.isEmpty`,
 not from set equality. When the sandbox subscription finally expires, it is
 correct for PaidUp to report nothing; buy again.
 
-## "PaidUp on iPhone, not on iPad"
+## "Entitled on iPhone, not on iPad"
 
 Same Apple ID? Then the iPad will see the purchase on its next refresh
 (foreground or `restore()`). If the iPad still shows nothing, check

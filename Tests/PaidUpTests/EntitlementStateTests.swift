@@ -12,7 +12,7 @@ final class EntitlementStateTests: XCTestCase {
     func testSubscribedIsActiveAndEntitled() async throws {
         let client = FakeStoreKitClient()
         client.setCurrentEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
-        client.renewalStates["pro.monthly"] = .subscribed
+        client.renewalStateByProductID["pro.monthly"] = .subscribed
         let store = try makeStore(client: client)
         await store.startupTask.value
 
@@ -25,7 +25,7 @@ final class EntitlementStateTests: XCTestCase {
     func testGracePeriodIsEntitledAndLabelled() async throws {
         let client = FakeStoreKitClient()
         client.setCurrentEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
-        client.renewalStates["pro.monthly"] = .inGracePeriod
+        client.renewalStateByProductID["pro.monthly"] = .inGracePeriod
         let store = try makeStore(client: client)
         await store.startupTask.value
 
@@ -33,10 +33,10 @@ final class EntitlementStateTests: XCTestCase {
         XCTAssertEqual(store.entitlements.first?.state, .gracePeriod)
     }
 
-    func testBillingRetryWithoutGraceIsNotEntitled() async throws {
+    func testBillingRetryWithoutGraceIsNotEntitledBecauseStoreKitOmitsIt() async throws {
         let client = FakeStoreKitClient()
         client.setCurrentEntitlements([])
-        client.renewalStates["pro.monthly"] = .inBillingRetryPeriod
+        client.renewalStateByProductID["pro.monthly"] = .inBillingRetryPeriod
         let store = try makeStore(client: client)
         await store.startupTask.value
 
@@ -44,10 +44,10 @@ final class EntitlementStateTests: XCTestCase {
         XCTAssertTrue(store.entitlements.isEmpty)
     }
 
-    func testExpiredIsNotEntitled() async throws {
+    func testExpiredIsNotEntitledBecauseStoreKitOmitsIt() async throws {
         let client = FakeStoreKitClient()
         client.setCurrentEntitlements([])
-        client.renewalStates["pro.monthly"] = .expired
+        client.renewalStateByProductID["pro.monthly"] = .expired
         let store = try makeStore(client: client)
         await store.startupTask.value
 
@@ -202,10 +202,71 @@ final class EntitlementStateTests: XCTestCase {
         await store.engine.refreshAll()
         client.emitTransactionUpdate(.verified(tx))
         await store.engine.refreshAll()
-        try await waitUntil { client.finishedTransactionIDs.count >= 1 }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        let sentinel = client.makeTransaction(id: 2, productID: "lifetime", kind: .nonConsumable)
+        client.setCurrentEntitlements([tx, sentinel])
+        client.emitTransactionUpdate(.verified(sentinel))
+        try await waitUntil { client.finishedTransactionIDs.contains(2) }
 
-        XCTAssertEqual(client.finishedTransactionIDs, [1])
+        XCTAssertEqual(client.finishedTransactionIDs, [1, 2])
+    }
+
+    func testRenewalThroughUpdatesAdvancesExpirationAndFinishesBoth() async throws {
+        let client = FakeStoreKitClient()
+        let first = client.makeTransaction(id: 1, productID: "pro.monthly", expires: Date().addingTimeInterval(60))
+        client.setCurrentEntitlements([first])
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+        let before = try XCTUnwrap(store.entitlements.first?.expirationDate)
+
+        let renewal = client.makeTransaction(id: 2, productID: "pro.monthly", expires: Date().addingTimeInterval(3600))
+        client.setCurrentEntitlements([renewal])
+        client.emitTransactionUpdate(.verified(renewal))
+        try await waitUntil { (store.entitlements.first?.expirationDate ?? before) > before }
+
+        XCTAssertTrue(store.isEntitled(to: "pro.monthly"))
+        XCTAssertEqual(store.entitlements.count, 1)
+        XCTAssertEqual(Set(client.finishedTransactionIDs), [1, 2])
+    }
+
+    func testGraceLabelIsKeptWhenStatusLookupFails() async throws {
+        let client = FakeStoreKitClient()
+        let tx = client.makeTransaction(id: 1, productID: "pro.monthly")
+        client.setCurrentEntitlements([tx])
+        client.renewalStateByProductID["pro.monthly"] = .inGracePeriod
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+        XCTAssertEqual(store.entitlements.first?.state, .gracePeriod)
+
+        client.renewalStateByProductID = [:]
+        await store.engine.refreshAll()
+        XCTAssertEqual(store.entitlements.first?.state, .gracePeriod)
+    }
+
+    func testTwoTransactionsForOneProductReportBoth() async throws {
+        let client = FakeStoreKitClient()
+        client.setCurrentEntitlements([
+            client.makeTransaction(id: 1, productID: "pro.yearly"),
+            client.makeTransaction(id: 2, productID: "pro.yearly", ownership: .familyShared),
+        ])
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+        XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
+        XCTAssertEqual(Set(store.entitlements.map(\.ownership)), [.purchased, .familyShared])
+    }
+
+    func testUnfinishedTransactionsFromPreviousLaunchAreFinishedOnce() async throws {
+        let client = FakeStoreKitClient()
+        let stale = client.makeTransaction(id: 41, productID: "pro.monthly", revoked: Date())
+        let current = client.makeTransaction(id: 42, productID: "lifetime", kind: .nonConsumable)
+        client.setCurrentEntitlements([current])
+        client.setUnfinishedTransactions([stale, current])
+        let store = try makeStore(client: client)
+        await store.startupTask.value
+
+        XCTAssertEqual(Set(client.finishedTransactionIDs), [41, 42])
+        XCTAssertEqual(client.finishedTransactionIDs.count, 2)
+        XCTAssertFalse(store.isEntitled(to: "pro.monthly"))
+        XCTAssertTrue(store.isEntitled(to: "lifetime"))
     }
 
     func testPureStateMapping() {

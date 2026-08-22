@@ -58,15 +58,25 @@ last good remote set is kept and `onError(.remoteProviderFailed)` fires.
 ## The cache
 
 The last-known set is written atomically to
-`Application Support/PaidUp/<bundle-id>/entitlements.json` and read
+`Application Support/PaidUp/<bundle-id>/<userID>/entitlements.json` and read
 synchronously at `init`, so `isEntitled` is right on the first frame. It is
 replaced wholesale the moment the first `currentEntitlements` pass completes.
 The cache never wins an argument with StoreKit; it only answers before
-StoreKit has spoken.
+StoreKit has spoken. A refresh that is cancelled or shut down mid-read (the
+instance deallocated while StoreKit was answering) never writes the cache,
+so a partial answer can never replace a good one. Cached remote entries are
+ignored when no provider is configured.
 
 ## Finishing transactions
 
-Every verified transaction — from `currentEntitlements`, from `updates`, and
-from `purchase()` — is finished exactly once per process, after the
-entitlement set has been recomputed. Unverified transactions are not
-finished, matching Apple's guidance.
+Every verified transaction — from `currentEntitlements`, from `updates`,
+from `Transaction.unfinished` at startup, and from `purchase()` — is finished
+exactly once per process, after the entitlement set has been recomputed.
+Unverified transactions are not finished, matching Apple's guidance.
+
+## When `purchase()` says `.pending`
+
+Ask to Buy and SCA challenges, and also any purchase StoreKit accepted that
+does not yet appear in `currentEntitlements` (a deferred plan change, for
+instance). PaidUp never fabricates an entitlement from a purchase result; the
+entitlement arrives through `updates` when StoreKit grants it.

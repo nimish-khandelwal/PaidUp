@@ -8,9 +8,9 @@
 import Foundation
 
 /// The single place all mutable state lives: the `Transaction.updates`
-/// listener, the storeKitEntitlements and remoteProductIDs entitlement sets, the cache, and the
-/// refresh chains. Everything public reads a lock-guarded broadcaster this
-/// actor rewrites on every change.
+/// listener, the StoreKit and remote entitlement sets, the disk cache, and
+/// the refresh chains. Everything public reads the ``EntitlementBroadcaster``
+/// this actor rewrites on every change.
 actor EntitlementEngine {
     private let productIDs: Set<String>
     private let userID: UUID?
@@ -27,7 +27,9 @@ actor EntitlementEngine {
 
     private var listenerTask: Task<Void, Never>?
     private var storeKitRefreshChain: Task<Void, Never>?
+    private var storeKitRefreshQueued = false
     private var remoteRefreshChain: Task<Void, Never>?
+    private var remoteRefreshQueued = false
     private var isShutDown = false
 
     init(
@@ -43,7 +45,7 @@ actor EntitlementEngine {
         self.client = client
         self.broadcaster = broadcaster
 
-        let directory = config.storageDirectory ?? EntitlementDiskCache.defaultDirectory()
+        let directory = config.storageDirectory ?? EntitlementDiskCache.defaultDirectory(userID: userID)
         var loadedCache: EntitlementDiskCache?
         var cached: EntitlementDiskCache.CachedEntitlements?
         do {
@@ -55,8 +57,11 @@ actor EntitlementEngine {
         }
         self.diskCache = loadedCache
         self.storeKitEntitlements = Set(cached?.entitlements ?? [])
-        self.remoteProductIDs = Set(cached?.remote ?? [])
-        broadcaster.replace(with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: [:]))
+        self.remoteProductIDs = config.remoteProvider == nil ? [] : Set(cached?.remote ?? [])
+        let seedCatalog = (cached?.remoteSubscriptionGroupIDs ?? [:]).reduce(into: [String: ProductInfo]()) {
+            $0[$1.key] = ProductInfo(id: $1.key, kind: .autoRenewable, subscriptionGroupID: $1.value)
+        }
+        broadcaster.replace(with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: seedCatalog))
     }
 
     deinit {
@@ -70,12 +75,17 @@ actor EntitlementEngine {
         let client = self.client
         listenerTask = Task { [weak self] in
             for await event in client.transactionUpdates() {
-                guard let self, !Task.isCancelled else { return }
-                await self.handleTransactionUpdate(event)
+                guard let self else { return }
+                Task { await self.handleTransactionUpdate(event) }
+                if Task.isCancelled { return }
             }
         }
-        await loadProductCatalog()
+        let catalogLoad = Task { [weak self] in await self?.loadProductCatalog() }
         await refreshFromStoreKit()
+        guard !isShutDown else { return }
+        await finishUnfinishedTransactions()
+        await catalogLoad.value
+        guard !isShutDown else { return }
         await refreshRemote()
     }
 
@@ -90,11 +100,20 @@ actor EntitlementEngine {
 
     func refreshAll() async {
         await refreshFromStoreKit()
+        if productCatalog.isEmpty {
+            await loadProductCatalog()
+        }
         await refreshRemote()
     }
 
     func purchase(_ id: String) async -> PurchaseResult {
         guard productIDs.contains(id) else { return .failed(.productNotFound(id)) }
+        if productCatalog.isEmpty {
+            await loadProductCatalog()
+        }
+        if productCatalog[id]?.kind == .other {
+            return .failed(.productNotFound(id))
+        }
 
         let outcome: PurchaseOutcome
         do {
@@ -118,15 +137,11 @@ actor EntitlementEngine {
         case .success(.verified(let tx)):
             await refreshFromStoreKit()
             await finishOnce(tx)
-            await refreshRemote()
+            Task { [weak self] in await self?.refreshRemote() }
             if let entitlement = storeKitEntitlements.first(where: { $0.productID == tx.productID }) {
                 return .success(entitlement)
             }
-            let state = await client.renewalState(for: tx)
-            if let entitlement = Self.entitlement(from: tx, renewalState: state) {
-                return .success(entitlement)
-            }
-            return .failed(.productNotFound(id))
+            return tx.kind == .other ? .failed(.productNotFound(id)) : .pending
         }
     }
 
@@ -143,10 +158,15 @@ actor EntitlementEngine {
 
     func refreshFromStoreKit() async {
         guard !isShutDown else { return }
+        if storeKitRefreshQueued, let queued = storeKitRefreshChain {
+            await queued.value
+            return
+        }
+        storeKitRefreshQueued = true
         let previous = storeKitRefreshChain
         let task = Task { [weak self] in
             await previous?.value
-            await self?.recomputeFromStoreKit()
+            await self?.runQueuedStoreKitRefresh()
         }
         storeKitRefreshChain = task
         await task.value
@@ -154,15 +174,31 @@ actor EntitlementEngine {
 
     func refreshRemote() async {
         guard config.remoteProvider != nil, !isShutDown else { return }
+        if remoteRefreshQueued, let queued = remoteRefreshChain {
+            await queued.value
+            return
+        }
+        remoteRefreshQueued = true
         let previous = remoteRefreshChain
         let task = Task { [weak self] in
             await previous?.value
-            await self?.fetchRemoteEntitlements()
+            await self?.runQueuedRemoteRefresh()
         }
         remoteRefreshChain = task
         await task.value
     }
 
+    private func runQueuedStoreKitRefresh() async {
+        storeKitRefreshQueued = false
+        guard !isShutDown else { return }
+        await recomputeFromStoreKit()
+    }
+
+    private func runQueuedRemoteRefresh() async {
+        remoteRefreshQueued = false
+        guard !isShutDown else { return }
+        await fetchRemoteEntitlements()
+    }
 
     private func handleTransactionUpdate(_ event: TransactionEvent) async {
         switch event {
@@ -174,11 +210,24 @@ actor EntitlementEngine {
         }
     }
 
+    private func finishUnfinishedTransactions() async {
+        for await event in client.unfinishedTransactions() {
+            if case .verified(let tx) = event {
+                await finishOnce(tx)
+            }
+        }
+    }
+
     private func loadProductCatalog() async {
         guard productCatalog.isEmpty, !productIDs.isEmpty else { return }
         do {
             let products = try await client.products(for: productIDs)
             productCatalog = Dictionary(uniqueKeysWithValues: products.map { ($0.id, $0) })
+            if !remoteProductIDs.isEmpty {
+                publishMergedEntitlements()
+            }
+        } catch is CancellationError {
+            return
         } catch {
             config.onError?(.storeKit(underlying: error))
         }
@@ -195,10 +244,14 @@ actor EntitlementEngine {
                 config.onError?(.unverified(productID: productID))
             }
         }
+        guard !Task.isCancelled, !isShutDown else { return }
 
+        let subscriptions = found.filter { $0.kind == .autoRenewable }
+        let states = subscriptions.isEmpty ? [:] : await client.renewalStates(for: subscriptions)
+        let previous = storeKitEntitlements
         var fresh: Set<Entitlement> = []
         for tx in found {
-            let state = tx.kind == .autoRenewable ? await client.renewalState(for: tx) : nil
+            let state = states[tx.id] ?? Self.previousRenewalState(for: tx.productID, in: previous)
             if let entitlement = Self.entitlement(from: tx, renewalState: state) {
                 fresh.insert(entitlement)
             }
@@ -218,8 +271,11 @@ actor EntitlementEngine {
             let ids = try await withTimeout(config.remoteTimeout) {
                 try await provider.currentEntitlements()
             }
+            guard !isShutDown, !Task.isCancelled else { return }
             remoteProductIDs = ids
             publishMergedEntitlements()
+        } catch is CancellationError {
+            return
         } catch {
             config.onError?(.remoteProviderFailed(underlying: error))
         }
@@ -232,8 +288,12 @@ actor EntitlementEngine {
     }
 
     private func publishMergedEntitlements() {
-        broadcaster.replace(with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: productCatalog))
-        writeCache()
+        let changed = broadcaster.replace(
+            with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: productCatalog)
+        )
+        if changed {
+            writeCache()
+        }
     }
 
     private func writeCache() {
@@ -243,12 +303,24 @@ actor EntitlementEngine {
                 EntitlementDiskCache.CachedEntitlements(
                     entitlements: Array(storeKitEntitlements),
                     remote: Array(remoteProductIDs).sorted(),
+                    remoteSubscriptionGroupIDs: remoteProductIDs.reduce(into: [:]) { groups, id in
+                        groups[id] = productCatalog[id]?.subscriptionGroupID
+                    },
                     savedAt: Date()
                 )
             )
         } catch {
             config.onError?(.storageFailed(underlying: error))
         }
+    }
+
+    static func previousRenewalState(
+        for productID: String,
+        in entitlements: Set<Entitlement>
+    ) -> RenewalState? {
+        guard let previous = entitlements.first(where: { $0.productID == productID && $0.source == .storeKit })
+        else { return nil }
+        return previous.state == .gracePeriod ? .inGracePeriod : nil
     }
 
     static func entitlement(
@@ -307,16 +379,49 @@ func withTimeout<T: Sendable>(
     _ seconds: TimeInterval,
     _ operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            throw RemoteProviderTimeout(seconds: seconds)
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+        let resumer = OnceResumer(continuation)
+        let work = Task {
+            do {
+                resumer.resume(.success(try await operation()))
+            } catch {
+                resumer.resume(.failure(error))
+            }
         }
-        guard let first = try await group.next() else {
-            throw RemoteProviderTimeout(seconds: seconds)
+        let timer = Task {
+            guard seconds.isFinite else { return }
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            resumer.resume(.failure(RemoteProviderTimeout(seconds: seconds)))
+            work.cancel()
         }
-        group.cancelAll()
-        return first
+        resumer.onResume = { timer.cancel() }
+    }
+}
+
+/// Resumes a continuation at most once, no matter how many racers finish.
+final class OnceResumer<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var cleanup: (() -> Void)?
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    var onResume: (() -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return cleanup }
+        set { lock.lock(); cleanup = newValue; lock.unlock() }
+    }
+
+    func resume(_ result: Result<T, Error>) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        let cleanup = self.cleanup
+        lock.unlock()
+        guard let continuation else { return }
+        continuation.resume(with: result)
+        cleanup?()
     }
 }

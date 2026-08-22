@@ -8,7 +8,7 @@
 import Foundation
 import StoreKit
 
-/// Real StoreKit 2. Every newer API is guarded; iOS 15 is the floor.
+/// Real StoreKit 2. Nothing newer than iOS 15 is used; see COMPATIBILITY.md.
 struct LiveStoreKitClient: StoreKitClient {
     func products(for ids: Set<String>) async throws -> [ProductInfo] {
         try await Product.products(for: ids).map { product in
@@ -28,26 +28,25 @@ struct LiveStoreKitClient: StoreKitClient {
         Self.makeEventStream(from: Transaction.updates)
     }
 
-    func renewalState(for transaction: VerifiedTransaction) async -> RenewalState? {
-        guard transaction.kind == .autoRenewable,
-              let groupID = transaction.subscriptionGroupID
-        else { return nil }
+    func unfinishedTransactions() -> AsyncStream<TransactionEvent> {
+        Self.makeEventStream(from: Transaction.unfinished)
+    }
 
-        let statuses: [Product.SubscriptionInfo.Status]
-        if #available(iOS 17.0, macOS 14.0, *) {
-            statuses = (try? await Product.SubscriptionInfo.status(for: groupID)) ?? []
-        } else {
-            let products = (try? await Product.products(for: [transaction.productID])) ?? []
-            statuses = (try? await products.first?.subscription?.status) ?? []
+    func renewalStates(for transactions: [VerifiedTransaction]) async -> [UInt64: RenewalState] {
+        var result: [UInt64: RenewalState] = [:]
+        let subscriptions = transactions.filter { $0.kind == .autoRenewable && $0.subscriptionGroupID != nil }
+        let groupIDs = Set(subscriptions.compactMap(\.subscriptionGroupID))
+        for groupID in groupIDs {
+            let statuses = (try? await Product.SubscriptionInfo.status(for: groupID)) ?? []
+            for transaction in subscriptions where transaction.subscriptionGroupID == groupID {
+                let match = statuses.first { Self.verifiedID(of: $0) == transaction.id }
+                    ?? statuses.first { Self.verifiedProductID(of: $0) == transaction.productID }
+                if let match, let state = Self.renewalState(from: match.state) {
+                    result[transaction.id] = state
+                }
+            }
         }
-
-        for status in statuses {
-            guard case .verified(let tx) = status.transaction,
-                  tx.productID == transaction.productID
-            else { continue }
-            return Self.renewalState(from: status.state)
-        }
-        return nil
+        return result
     }
 
     func purchase(_ id: String, appAccountToken: UUID?) async throws -> PurchaseOutcome {
@@ -66,6 +65,8 @@ struct LiveStoreKitClient: StoreKitClient {
             }.value
         } catch Product.PurchaseError.purchaseNotAllowed {
             throw PurchaseFailure.notAllowed
+        } catch Product.PurchaseError.productUnavailable {
+            throw PaidUpError.productNotFound(id)
         } catch StoreKitError.userCancelled {
             return .userCancelled
         }
@@ -121,6 +122,16 @@ struct LiveStoreKitClient: StoreKitClient {
         case .unverified(let tx, _):
             return .unverified(productID: tx.productID)
         }
+    }
+
+    private static func verifiedID(of status: Product.SubscriptionInfo.Status) -> UInt64? {
+        guard case .verified(let tx) = status.transaction else { return nil }
+        return tx.id
+    }
+
+    private static func verifiedProductID(of status: Product.SubscriptionInfo.Status) -> String? {
+        guard case .verified(let tx) = status.transaction else { return nil }
+        return tx.productID
     }
 
     private static func productKind(of type: Product.ProductType) -> ProductKind {

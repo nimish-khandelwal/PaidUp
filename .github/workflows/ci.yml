@@ -35,29 +35,37 @@ jobs:
         run: brew install xcodegen
       - name: Install simulator runtime if needed
         if: matrix.destination.os == '17.5'
-        run: xcodebuild -downloadPlatform iOS -buildVersion 17.5 || true
+        run: xcodebuild -downloadPlatform iOS -buildVersion 17.5
+      - name: Show available simulator runtimes
+        run: xcrun simctl list runtimes
       - name: Build package for iOS
+        shell: bash
         run: |
+          set -o pipefail
           xcodebuild build \
             -scheme PaidUp \
             -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
             -skipPackagePluginValidation \
-            | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}
+            | xcbeautify --renderer github-actions
       - name: Generate sample project
         run: cd Examples/PaidUpSample && xcodegen generate
       - name: Sample app tests against the StoreKit configuration
+        shell: bash
         run: |
+          set -o pipefail
           xcodebuild test \
             -project Examples/PaidUpSample/PaidUpSample.xcodeproj \
             -scheme PaidUpSample \
             -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
             -skipPackagePluginValidation \
-            | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}
+            | xcbeautify --renderer github-actions
 
   pod-lint:
     name: pod lib lint
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
       - name: Lint podspec
         run: pod lib lint --allow-warnings

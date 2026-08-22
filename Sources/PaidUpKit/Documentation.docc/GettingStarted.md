@@ -26,21 +26,21 @@ import PaidUpKit
 @MainActor
 final class Store: ObservableObject {
     @Published var entitlements: Set<Entitlement> = []
-    let entitled: PaidUp
+    let store: PaidUp
 
     init(userID: UUID) {
         var config = PaidUpConfiguration.default
         config.onError = { error in print(error) }
-        entitled = PaidUp(
+        store = PaidUp(
             products: ["pro.monthly", "pro.yearly", "lifetime"],
             userID: userID,
             configuration: config
         )
-        entitlements = entitled.entitlements
+        entitlements = store.entitlements
     }
 
     func observe() async {
-        for await set in entitled.updates { entitlements = set }
+        for await set in store.updates { entitlements = set }
     }
 }
 ```
@@ -53,6 +53,8 @@ app's lifetime.
 your user IDs are strings, derive a stable one:
 
 ```swift
+import CryptoKit
+
 extension UUID {
     static func stable(from string: String) -> UUID {
         var hasher = SHA256()
@@ -68,8 +70,8 @@ extension UUID {
 ## Ask yes/no, synchronously
 
 ```swift
-if entitled.isEntitled(toGroup: "21000001") { unlockPro() }   // subscriptions
-if entitled.isEntitled(to: "lifetime") { unlockPro() }         // non-consumables
+if store.isEntitled(toGroup: "21000001") { unlockPro() }   // subscriptions
+if store.isEntitled(to: "lifetime") { unlockPro() }         // non-consumables
 ```
 
 Prefer `isEntitled(toGroup:)` for subscriptions: an upgrade from monthly to
@@ -78,14 +80,14 @@ yearly changes the product ID but not the group.
 ## Purchase and restore
 
 ```swift
-switch await entitled.purchase("pro.yearly") {
+switch await store.purchase("pro.yearly") {
 case .success(let entitlement): showThanks(entitlement)
 case .userCancelled:            break
 case .pending:                  showAskToBuyNotice()   // arrives via `updates` if approved
 case .failed(let error):        showError(error)
 }
 
-switch await entitled.restore() {               // user-initiated only
+switch await store.restore() {               // user-initiated only
 case .restored(let set):  showRestored(set)
 case .failed(let error):  showError(error)
 }

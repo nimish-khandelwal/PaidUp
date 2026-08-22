@@ -81,6 +81,7 @@ final class ErrorLog: @unchecked Sendable {
 }
 
 struct TestError: Error, Equatable {}
+struct WaitTimeout: Error {}
 
 let allProducts: Set<String> = ["pro.monthly", "pro.yearly", "lifetime"]
 
@@ -118,5 +119,6 @@ extension XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out after \(timeout)s waiting for condition")
+        throw WaitTimeout()
     }
 }

@@ -14,7 +14,8 @@ protocol StoreKitClient: Sendable {
     func products(for ids: Set<String>) async throws -> [ProductInfo]
     func currentEntitlements() -> AsyncStream<TransactionEvent>
     func transactionUpdates() -> AsyncStream<TransactionEvent>
-    func renewalState(for transaction: VerifiedTransaction) async -> RenewalState?
+    func unfinishedTransactions() -> AsyncStream<TransactionEvent>
+    func renewalStates(for transactions: [VerifiedTransaction]) async -> [UInt64: RenewalState]
     func purchase(_ id: String, appAccountToken: UUID?) async throws -> PurchaseOutcome
     func sync() async throws
 }

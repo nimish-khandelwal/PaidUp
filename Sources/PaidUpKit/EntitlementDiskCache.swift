@@ -14,7 +14,30 @@ struct EntitlementDiskCache: Sendable {
     struct CachedEntitlements: Codable, Sendable, Equatable {
         var entitlements: [Entitlement]
         var remote: [String]
+        var remoteSubscriptionGroupIDs: [String: String]
         var savedAt: Date
+
+        init(
+            entitlements: [Entitlement],
+            remote: [String],
+            remoteSubscriptionGroupIDs: [String: String] = [:],
+            savedAt: Date
+        ) {
+            self.entitlements = entitlements
+            self.remote = remote
+            self.remoteSubscriptionGroupIDs = remoteSubscriptionGroupIDs
+            self.savedAt = savedAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            entitlements = try container.decode([Entitlement].self, forKey: .entitlements)
+            remote = try container.decode([String].self, forKey: .remote)
+            remoteSubscriptionGroupIDs = try container.decodeIfPresent(
+                [String: String].self, forKey: .remoteSubscriptionGroupIDs
+            ) ?? [:]
+            savedAt = try container.decode(Date.self, forKey: .savedAt)
+        }
     }
 
     let fileURL: URL
@@ -27,7 +50,7 @@ struct EntitlementDiskCache: Sendable {
         fileURL = directory.appendingPathComponent("entitlements.json")
     }
 
-    static func defaultDirectory() -> URL {
+    static func defaultDirectory(userID: UUID?) -> URL {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -36,6 +59,7 @@ struct EntitlementDiskCache: Sendable {
         return base
             .appendingPathComponent("PaidUp", isDirectory: true)
             .appendingPathComponent(bundleID, isDirectory: true)
+            .appendingPathComponent(userID?.uuidString ?? "anonymous", isDirectory: true)
     }
 
     func load() throws -> CachedEntitlements? {

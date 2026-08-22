@@ -19,7 +19,7 @@ import UIKit
 ///     configuration: .default
 /// )
 ///
-/// if store.isEntitled(to: "pro.monthly") { unlockPro() }
+/// if store.isEntitled(toGroup: "21000001") { unlockPro() }
 ///
 /// for await entitlements in store.updates {
 ///     unlockPro(if: !entitlements.isEmpty)
@@ -126,8 +126,8 @@ public final class PaidUp: @unchecked Sendable {
     }
 
     /// Emits the current set immediately, then again on every change. Each
-    /// call returns an independent stream; it ends when this instance
-    /// deallocates.
+    /// access creates a new independent stream, so read it once and iterate
+    /// it; it ends when this instance deallocates.
     public var updates: AsyncStream<Set<Entitlement>> {
         broadcaster.makeStream()
     }
