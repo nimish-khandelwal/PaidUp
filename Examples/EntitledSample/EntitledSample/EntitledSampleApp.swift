@@ -1,6 +1,6 @@
 //
 //  EntitledSampleApp.swift
-//  Cheers Vegas Slots
+//  Entitled
 //
 //  Created by Nimish Khandelwal.
 //
