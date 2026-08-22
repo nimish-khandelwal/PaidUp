@@ -39,17 +39,17 @@ jobs:
       - name: Build package for iOS
         run: |
           xcodebuild build \
-            -scheme Entitled \
+            -scheme PaidUp \
             -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
             -skipPackagePluginValidation \
             | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}
       - name: Generate sample project
-        run: cd Examples/EntitledSample && xcodegen generate
+        run: cd Examples/PaidUpSample && xcodegen generate
       - name: Sample app tests against the StoreKit configuration
         run: |
           xcodebuild test \
-            -project Examples/EntitledSample/EntitledSample.xcodeproj \
-            -scheme EntitledSample \
+            -project Examples/PaidUpSample/PaidUpSample.xcodeproj \
+            -scheme PaidUpSample \
             -destination 'platform=iOS Simulator,name=${{ matrix.destination.device }},OS=${{ matrix.destination.os }}' \
             -skipPackagePluginValidation \
             | xcbeautify --renderer github-actions || exit ${PIPESTATUS[0]}

@@ -1,12 +1,12 @@
 //
 //  main.swift
-//  Entitled
+//  PaidUp
 //
 //  Created by Nimish Khandelwal.
 //
 
 import Foundation
-@testable import EntitledKit
+@testable import PaidUpKit
 
 final class HarnessStoreKitClient: StoreKitClient, @unchecked Sendable {
     private let lock = NSLock()
@@ -59,10 +59,10 @@ let dir = FileManager.default.temporaryDirectory.appendingPathComponent("LeakHar
 let sem = DispatchSemaphore(value: 0)
 Task {
     for cycle in 0..<50 {
-        var config = EntitledConfiguration.default
+        var config = PaidUpConfiguration.default
         config.storageDirectory = dir
         config.remoteProvider = HarnessRemoteProvider()
-        let store = Entitled(products: ["pro.monthly", "lifetime"], userID: UUID(), configuration: config, client: client)
+        let store = PaidUp(products: ["pro.monthly", "lifetime"], userID: UUID(), configuration: config, client: client)
         await store.startupTask.value
         let stream = store.updates
         let consumer = Task { for await _ in stream {} }

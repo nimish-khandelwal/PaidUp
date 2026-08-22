@@ -1,6 +1,6 @@
-# Entitled
+# PaidUp
 
-[![CI](https://github.com/nimish-khandelwal/Entitled/actions/workflows/ci.yml/badge.svg)](https://github.com/nimish-khandelwal/Entitled/actions/workflows/ci.yml)
+[![CI](https://github.com/nimish-khandelwal/PaidUp/actions/workflows/ci.yml/badge.svg)](https://github.com/nimish-khandelwal/PaidUp/actions/workflows/ci.yml)
 ![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange)
 ![iOS 15+](https://img.shields.io/badge/iOS-15%2B-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)
@@ -9,9 +9,9 @@
 now?" from StoreKit 2 — and keeps that answer correct over time.**
 
 ```swift
-import EntitledKit
+import PaidUpKit
 
-let store = Entitled(
+let store = PaidUp(
     products: ["pro.monthly", "pro.yearly", "lifetime"],
     userID: currentUser.id,          // becomes appAccountToken on every purchase
     configuration: .default
@@ -46,7 +46,7 @@ Every subscription app rewrites the same piece badly:
 
 ## The idea
 
-Entitled is **just the entitlement layer**. Not a paywall, not a backend.
+PaidUp is **just the entitlement layer**. Not a paywall, not a backend.
 
 1. **Listen from the first moment.** `Transaction.updates` is consumed from
    `init` until `deinit`; nothing is missed.
@@ -69,22 +69,22 @@ Entitled is **just the entitlement layer**. Not a paywall, not a backend.
 **Swift Package Manager**
 
 ```swift
-.package(url: "https://github.com/nimish-khandelwal/Entitled.git", from: "0.1.0")
+.package(url: "https://github.com/nimish-khandelwal/PaidUp.git", from: "0.1.0")
 ```
 
 **CocoaPods**
 
 ```ruby
-pod 'Entitled', '~> 0.1'
+pod 'PaidUp', '~> 0.1'
 ```
 
-**Binary** — `EntitledKit.xcframework.zip` is attached to each GitHub release.
+**Binary** — `PaidUpKit.xcframework.zip` is attached to each GitHub release.
 
 ## Using it
 
 ```swift
 // 1. Create one instance and keep it alive (App / AppDelegate / root model).
-let store = Entitled(products: products, userID: user.id, configuration: .default)
+let store = PaidUp(products: products, userID: user.id, configuration: .default)
 
 // 2. Ask from anywhere, any thread, no await.
 store.isEntitled(toGroup: "21000001")   // subscriptions: check the group
@@ -98,14 +98,14 @@ switch await store.purchase("pro.yearly") {
 case .success(let entitlement): …
 case .userCancelled: …
 case .pending: …                       // Ask to Buy; arrives via `updates` later
-case .failed(let error): …             // EntitledError
+case .failed(let error): …             // PaidUpError
 }
 await store.restore()                   // user-initiated button only
 ```
 
 ## Which states count as entitled
 
-| StoreKit renewal state | Entitled? | `Entitlement.state` |
+| StoreKit renewal state | PaidUp? | `Entitlement.state` |
 | --- | --- | --- |
 | `subscribed` | **yes** | `.active` |
 | `inGracePeriod` | **yes** | `.gracePeriod` |
@@ -116,7 +116,7 @@ await store.restore()                   // user-initiated button only
 | pending (Ask to Buy) | not yet; `purchase()` → `.pending` | — |
 
 Full reasoning, Family Sharing, upgrades, offers and the remote merge rule:
-[*Which subscription states count as entitled, and why*](Sources/EntitledKit/Documentation.docc/EntitlementStates.md).
+[*Which subscription states count as entitled, and why*](Sources/PaidUpKit/Documentation.docc/EntitlementStates.md).
 
 ## Cross-platform purchases
 
@@ -128,21 +128,21 @@ struct MyBackendProvider: EntitlementProvider {
         try await api.get("/me/entitlements").productIDs
     }
 }
-var config = EntitledConfiguration.default
+var config = PaidUpConfiguration.default
 config.remoteProvider = MyBackendProvider()
 ```
 
-Read [*Cross-platform subscriptions*](Sources/EntitledKit/Documentation.docc/CrossPlatform.md)
+Read [*Cross-platform subscriptions*](Sources/PaidUpKit/Documentation.docc/CrossPlatform.md)
 for the `appAccountToken` trap and the architecture diagram.
 
 ## Configuration
 
 ```swift
-var config = EntitledConfiguration.default
+var config = PaidUpConfiguration.default
 config.remoteProvider = MyBackendProvider()   // optional (default nil)
 config.remoteTimeout = 5                      // seconds (default 10)
 config.refreshOnForeground = true             // default true
-config.storageDirectory = nil                 // default App Support/Entitled/<bundle-id>
+config.storageDirectory = nil                 // default App Support/PaidUp/<bundle-id>
 config.onError = { error in print(error) }    // set this!
 ```
 
@@ -160,11 +160,11 @@ requests, any backend.
 - `swift test` — 52 tests on a scripted StoreKit fake: the state table, the
   merge rule, the cache, purchase/restore, listener lifecycle, concurrent
   reads from 8 queues. Clean under `--sanitize=thread`.
-- `Examples/EntitledSample` — SwiftUI app with a checked-in
-  `Entitled.storekit`, an `SKTestSession` suite (purchase, expiry,
+- `Examples/PaidUpSample` — SwiftUI app with a checked-in
+  `PaidUp.storekit`, an `SKTestSession` suite (purchase, expiry,
   accelerated renewals, refund, Ask to Buy, restore, upgrade) and an XCUITest
   that taps *Subscribe*, asserts the PRO badge, expires the subscription,
-  relaunches and asserts it is gone. `cd Examples/EntitledSample && xcodegen
+  relaunches and asserts it is gone. `cd Examples/PaidUpSample && xcodegen
   generate` then ⌘U.
 
 ## Quick troubleshooting
@@ -174,16 +174,16 @@ requests, any backend.
 - **Sandbox renews every 5 minutes and my logic flips?** Each renewal changes
   `expirationDate`, so `updates` emits a new set — still entitled. Drive UI
   from `isEntitled`, not set equality.
-- **Entitled on iPhone, not on iPad?** Same Apple ID → foreground or
+- **PaidUp on iPhone, not on iPad?** Same Apple ID → foreground or
   `restore()`. Different Apple ID → that's the App Store, use Family Sharing.
 - **Paid on Android, locked on iOS?** You need the remote provider.
 
-Longer answers: [Troubleshooting](Sources/EntitledKit/Documentation.docc/Troubleshooting.md).
+Longer answers: [Troubleshooting](Sources/PaidUpKit/Documentation.docc/Troubleshooting.md).
 
 ## Docs
 
 Build the DocC catalog in Xcode (*Product → Build Documentation*) or read the
-articles directly under `Sources/EntitledKit/Documentation.docc/`. See also
+articles directly under `Sources/PaidUpKit/Documentation.docc/`. See also
 [COMPATIBILITY.md](COMPATIBILITY.md), [PERFORMANCE.md](PERFORMANCE.md),
 [CHANGELOG.md](CHANGELOG.md).
 

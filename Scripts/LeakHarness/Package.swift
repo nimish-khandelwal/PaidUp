@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "LeakHarness",
-            dependencies: [.product(name: "EntitledKit", package: "Entitled")]
+            dependencies: [.product(name: "PaidUpKit", package: "PaidUp")]
         ),
     ]
 )

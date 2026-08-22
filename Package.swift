@@ -2,26 +2,26 @@
 import PackageDescription
 
 let package = Package(
-    name: "Entitled",
+    name: "PaidUp",
     platforms: [
         .iOS(.v15),
         .macOS(.v12),
     ],
     products: [
-        .library(name: "EntitledKit", targets: ["EntitledKit"]),
+        .library(name: "PaidUpKit", targets: ["PaidUpKit"]),
     ],
     targets: [
         .target(
-            name: "EntitledKit",
-            path: "Sources/EntitledKit",
+            name: "PaidUpKit",
+            path: "Sources/PaidUpKit",
             resources: [
                 .copy("Resources/PrivacyInfo.xcprivacy"),
             ]
         ),
         .testTarget(
-            name: "EntitledTests",
-            dependencies: ["EntitledKit"],
-            path: "Tests/EntitledTests"
+            name: "PaidUpTests",
+            dependencies: ["PaidUpKit"],
+            path: "Tests/PaidUpTests"
         ),
     ]
 )

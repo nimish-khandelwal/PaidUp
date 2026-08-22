@@ -6,5 +6,5 @@ DerivedData/
 *.xcframework
 build/
 Pods/
-Examples/EntitledSample/EntitledSample.xcodeproj/
-Examples/EntitledSample/EntitledSample/Info.plist
+Examples/PaidUpSample/PaidUpSample.xcodeproj/
+Examples/PaidUpSample/PaidUpSample/Info.plist

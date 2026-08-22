@@ -1,5 +1,5 @@
 name: Integration help
-description: Entitled builds, but entitlements are not what you expect.
+description: PaidUp builds, but entitlements are not what you expect.
 labels: [question]
 body:
   - type: markdown
@@ -12,7 +12,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Entitled version + installation method
+      label: PaidUp version + installation method
       placeholder: "0.1.0 via SPM"
     validations:
       required: true

@@ -16,16 +16,16 @@ never to an iOS version less than three years old at the time of release.
 
 Verified against Apple's headers in the Xcode 26 SDK:
 
-| API | Introduced | What Entitled does |
+| API | Introduced | What PaidUp does |
 | --- | --- | --- |
 | `Product.SubscriptionInfo.status(for: groupID)` | iOS 17.0 | Used to label `.gracePeriod`. On iOS 15/16 falls back to `Product.products(for:)` → `subscription?.status`. Same answer, one extra fetch. |
 | `Product.SubscriptionInfo.Status.all` | iOS 17.0 | Not used. |
-| `Transaction.reason` | iOS 17.0 | Not used; Entitled does not distinguish purchase from renewal. |
+| `Transaction.reason` | iOS 17.0 | Not used; PaidUp does not distinguish purchase from renewal. |
 | `Transaction.offer` / `offerType` | iOS 17.2 | Not used; offers do not change entitlement. |
 | `Transaction.currentEntitlements(for:)` | iOS 18.4 | Not used; the all-products `currentEntitlements` is the source of truth on every OS. |
 | `Product.purchase(options:)` | iOS 15.0 | Used on every OS. Unavailable on visionOS, which is not a supported platform. |
 
-If Apple deprecates something Entitled wraps, the wrapper keeps working
+If Apple deprecates something PaidUp wraps, the wrapper keeps working
 behind an `@available` guard with the replacement adopted on newer OSes;
 the public API does not change within a major version.
 

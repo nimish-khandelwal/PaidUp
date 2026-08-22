@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds EntitledKit.xcframework (iOS device + simulator) for attaching to a
+# Builds PaidUpKit.xcframework (iOS device + simulator) for attaching to a
 # GitHub release. Requires full Xcode and XcodeGen (`brew install xcodegen`).
 #
 # SPM packages archive as bare object files, so this generates a throwaway
@@ -20,8 +20,8 @@ for DEST in "generic/platform=iOS" "generic/platform=iOS Simulator"; do
     *)           NAME=iphoneos ;;
   esac
   xcodebuild archive \
-    -project "$OUT/EntitledKitFramework.xcodeproj" \
-    -scheme EntitledKit \
+    -project "$OUT/PaidUpKitFramework.xcodeproj" \
+    -scheme PaidUpKit \
     -destination "$DEST" \
     -archivePath "$OUT/$NAME.xcarchive" \
     SKIP_INSTALL=NO \
@@ -29,11 +29,11 @@ for DEST in "generic/platform=iOS" "generic/platform=iOS Simulator"; do
 done
 
 xcodebuild -create-xcframework \
-  -archive "$OUT/iphoneos.xcarchive" -framework EntitledKit.framework \
-  -archive "$OUT/iphonesimulator.xcarchive" -framework EntitledKit.framework \
-  -output "$OUT/EntitledKit.xcframework"
+  -archive "$OUT/iphoneos.xcarchive" -framework PaidUpKit.framework \
+  -archive "$OUT/iphonesimulator.xcarchive" -framework PaidUpKit.framework \
+  -output "$OUT/PaidUpKit.xcframework"
 
-(cd "$OUT" && zip -r -q EntitledKit.xcframework.zip EntitledKit.xcframework)
-echo "Done: $OUT/EntitledKit.xcframework.zip"
+(cd "$OUT" && zip -r -q PaidUpKit.xcframework.zip PaidUpKit.xcframework)
+echo "Done: $OUT/PaidUpKit.xcframework.zip"
 echo "Attach it to the GitHub release, e.g.:"
-echo "  gh release upload v0.1.0 $OUT/EntitledKit.xcframework.zip"
+echo "  gh release upload v0.1.0 $OUT/PaidUpKit.xcframework.zip"

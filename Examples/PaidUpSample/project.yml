@@ -1,0 +1,63 @@
+name: PaidUpSample
+options:
+  bundleIdPrefix: dev.paidup.sample
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  PaidUp:
+    path: ../..
+targets:
+  PaidUpSample:
+    type: application
+    platform: iOS
+    sources:
+      - PaidUpSample
+    dependencies:
+      - package: PaidUp
+        product: PaidUpKit
+    info:
+      path: PaidUpSample/Info.plist
+      properties:
+        UILaunchScreen: {}
+  PaidUpSampleTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+    sources:
+      - PaidUpSampleTests
+      - path: PaidUp.storekit
+        buildPhase: resources
+    dependencies:
+      - target: PaidUpSample
+      - package: PaidUp
+        product: PaidUpKit
+  PaidUpSampleUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
+    sources:
+      - PaidUpSampleUITests
+      - path: PaidUp.storekit
+        buildPhase: resources
+    dependencies:
+      - target: PaidUpSample
+schemes:
+  PaidUpSample:
+    build:
+      targets:
+        PaidUpSample: all
+        PaidUpSampleTests: [test]
+        PaidUpSampleUITests: [test]
+    run:
+      storeKitConfiguration: PaidUp.storekit
+    test:
+      targets:
+        - PaidUpSampleTests
+        - PaidUpSampleUITests

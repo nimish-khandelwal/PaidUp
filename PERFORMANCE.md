@@ -6,12 +6,12 @@ Measured 2026-08-23, Swift 6.3.2 (Xcode 26.5), release configuration, arm64:
 
 ```
 swift build -c release
-xcrun clang -dynamiclib -o libEntitledKit.dylib .build/release/EntitledKit.build/*.o \
+xcrun clang -dynamiclib -o libPaidUpKit.dylib .build/release/PaidUpKit.build/*.o \
   -framework Foundation -framework StoreKit \
   -L"$(xcrun --show-sdk-path)/usr/lib/swift" \
   -L"$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx"
-strip -x libEntitledKit.dylib
-du -k libEntitledKit.dylib   # → 248 KB
+strip -x libPaidUpKit.dylib
+du -k libPaidUpKit.dylib   # → 248 KB
 ```
 
 **~248 KB** as a stripped dynamic library. Statically linked into a host app
@@ -28,12 +28,12 @@ relocation and symbol overhead the linker removes):
 | EntitlementEngine | 276 |
 | LiveStoreKitClient | 120 |
 | Entitlement | 104 |
-| Entitled | 88 |
+| PaidUp | 88 |
 | EntitlementDiskCache | 76 |
 | StoreKitClient + ProductInfo + VerifiedTransaction + PurchaseOutcome | 68 |
 | EntitlementBroadcaster | 56 |
-| EntitledConfiguration | 36 |
-| EntitledError | 32 |
+| PaidUpConfiguration | 36 |
+| PaidUpError | 32 |
 | PurchaseResult + RestoreResult | 24 |
 | AppForegroundObserver | 12 |
 | EntitlementProvider | 12 |
@@ -44,7 +44,7 @@ Design properties, verified by the test suite and the Thread Sanitizer:
 
 - **No retain cycles by construction.** The `Transaction.updates` listener
   task captures the actor `weak`; the actor cancels it in `deinit` and the
-  public `Entitled` cancels it again in its own `deinit`. The refresh chains
+  public `PaidUp` cancels it again in its own `deinit`. The refresh chains
   and the foreground observer also capture `weak`.
 - **Deallocation mid-purchase is safe.** The `purchase()` continuation holds
   the actor alive until StoreKit answers, the transaction is finished, and
@@ -70,7 +70,7 @@ listeners remaining: 0
 Process 77894: 0 leaks for 0 total leaked bytes.
 ```
 
-**Zero leaks, zero leaked bytes** across 50 `Entitled` lifecycles, and the
+**Zero leaks, zero leaked bytes** across 50 `PaidUp` lifecycles, and the
 fake client reports **0 remaining `Transaction.updates` listeners** — every
 listener task was cancelled when its instance died.
 
@@ -80,7 +80,7 @@ Memory footprint of the same run (`/usr/bin/time -l`, arm64 release):
   and harness included
 - maximum resident set size: 13.3 MB
 
-To reproduce in the GUI instead: profile `Examples/EntitledSample` under
+To reproduce in the GUI instead: profile `Examples/PaidUpSample` under
 **Instruments → Leaks + Allocations**, tap *Subscribe*, background and
 foreground the app 3×. Expect zero leaks; the allocation graph returns to
 baseline after each refresh, and only the cache file persists.
