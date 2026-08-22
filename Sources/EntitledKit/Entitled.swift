@@ -44,11 +44,11 @@ import UIKit
 ///   ones.
 /// - No singletons, no swizzling, no main-thread assumptions, no UI.
 public final class Entitled: @unchecked Sendable {
-    let core: EntitledCore
-    let startTask: Task<Void, Never>
-    private let snapshot: EntitlementSnapshot
+    let engine: EntitlementEngine
+    let startupTask: Task<Void, Never>
+    private let broadcaster: EntitlementBroadcaster
     #if canImport(UIKit) && !os(watchOS)
-    private let foregroundObserver: ForegroundObserver?
+    private let foregroundObserver: AppForegroundObserver?
     #endif
 
     /// Creates an independent instance and starts listening immediately.
@@ -79,22 +79,22 @@ public final class Entitled: @unchecked Sendable {
         client: StoreKitClient
     ) {
         let configuration = configuration.normalized()
-        let snapshot = EntitlementSnapshot()
-        let core = EntitledCore(
+        let broadcaster = EntitlementBroadcaster()
+        let engine = EntitlementEngine(
             products: products,
             userID: userID,
             config: configuration,
             client: client,
-            snapshot: snapshot
+            broadcaster: broadcaster
         )
-        self.core = core
-        self.snapshot = snapshot
-        self.startTask = Task { await core.start() }
+        self.engine = engine
+        self.broadcaster = broadcaster
+        self.startupTask = Task { await engine.start() }
 
         #if canImport(UIKit) && !os(watchOS)
         if configuration.refreshOnForeground {
-            foregroundObserver = ForegroundObserver { [weak core] in
-                await core?.refreshAll()
+            foregroundObserver = AppForegroundObserver { [weak engine] in
+                await engine?.refreshAll()
             }
         } else {
             foregroundObserver = nil
@@ -103,44 +103,44 @@ public final class Entitled: @unchecked Sendable {
     }
 
     deinit {
-        startTask.cancel()
-        let core = self.core
-        Task { await core.shutdown() }
+        startupTask.cancel()
+        let engine = self.engine
+        Task { await engine.shutdown() }
     }
 
     /// Everything the user has right now. Synchronous; safe from any thread.
     public var entitlements: Set<Entitlement> {
-        snapshot.current
+        broadcaster.current
     }
 
     /// `true` if an entitlement for this exact product ID exists.
     public func isEntitled(to productID: String) -> Bool {
-        snapshot.current.contains { $0.productID == productID }
+        broadcaster.current.contains { $0.productID == productID }
     }
 
     /// `true` if any entitlement belongs to this subscription group. Use this
     /// for subscriptions — it stays `true` across upgrades and downgrades,
     /// where the product ID changes.
     public func isEntitled(toGroup groupID: String) -> Bool {
-        snapshot.current.contains { $0.subscriptionGroupID == groupID }
+        broadcaster.current.contains { $0.subscriptionGroupID == groupID }
     }
 
     /// Emits the current set immediately, then again on every change. Each
     /// call returns an independent stream; it ends when this instance
     /// deallocates.
     public var updates: AsyncStream<Set<Entitlement>> {
-        snapshot.makeStream()
+        broadcaster.makeStream()
     }
 
     /// Buys a product, tagging it with `userID` as `appAccountToken`. Never
     /// throws; never leaves a transaction unfinished.
     public func purchase(_ productID: String) async -> PurchaseResult {
-        await core.purchase(productID)
+        await engine.purchase(productID)
     }
 
     /// Calls `AppStore.sync()` and recomputes. Prompts for App Store
     /// credentials — call only from a user-initiated *Restore* button.
     public func restore() async -> RestoreResult {
-        await core.restore()
+        await engine.restore()
     }
 }

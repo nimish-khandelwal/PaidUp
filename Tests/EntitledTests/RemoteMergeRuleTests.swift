@@ -1,5 +1,5 @@
 //
-//  MergeRuleTests.swift
+//  RemoteMergeRuleTests.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -8,13 +8,13 @@
 import XCTest
 @testable import EntitledKit
 
-final class MergeRuleTests: XCTestCase {
+final class RemoteMergeRuleTests: XCTestCase {
     func testRemoteAddsEntitlementsStoreKitDoesNotKnow() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
-        let provider = FakeProvider(.success(["pro.yearly"]))
+        client.setCurrentEntitlements([])
+        let provider = FakeEntitlementProvider(.success(["pro.yearly"]))
         let store = try makeStore(client: client) { $0.remoteProvider = provider }
-        await store.startTask.value
+        await store.startupTask.value
 
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
         XCTAssertTrue(store.isEntitled(toGroup: "group.pro"))
@@ -26,10 +26,10 @@ final class MergeRuleTests: XCTestCase {
 
     func testRemoteNeverRemovesLocallyVerifiedEntitlement() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
-        let provider = FakeProvider(.success([]))
+        client.setCurrentEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
+        let provider = FakeEntitlementProvider(.success([]))
         let store = try makeStore(client: client) { $0.remoteProvider = provider }
-        await store.startTask.value
+        await store.startupTask.value
 
         XCTAssertTrue(store.isEntitled(to: "pro.monthly"))
         XCTAssertEqual(store.entitlements.first?.source, .storeKit)
@@ -37,10 +37,10 @@ final class MergeRuleTests: XCTestCase {
 
     func testLocalWinsWhenBothReportSameProduct() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
-        let provider = FakeProvider(.success(["pro.monthly"]))
+        client.setCurrentEntitlements([client.makeTransaction(id: 1, productID: "pro.monthly")])
+        let provider = FakeEntitlementProvider(.success(["pro.monthly"]))
         let store = try makeStore(client: client) { $0.remoteProvider = provider }
-        await store.startTask.value
+        await store.startupTask.value
 
         XCTAssertEqual(store.entitlements.count, 1)
         XCTAssertEqual(store.entitlements.first?.source, .storeKit)
@@ -49,17 +49,17 @@ final class MergeRuleTests: XCTestCase {
 
     func testRemoteFailureKeepsLastGoodSetAndReports() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
-        let provider = FakeProvider(.success(["pro.yearly"]), .failure(TestError()))
+        client.setCurrentEntitlements([])
+        let provider = FakeEntitlementProvider(.success(["pro.yearly"]), .failure(TestError()))
         let log = ErrorLog()
         let store = try makeStore(client: client) {
             $0.remoteProvider = provider
             $0.onError = log.handler
         }
-        await store.startTask.value
+        await store.startupTask.value
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
 
-        await store.core.refreshRemote()
+        await store.engine.refreshRemote()
 
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
         guard case .remoteProviderFailed? = log.errors.last else {
@@ -69,19 +69,19 @@ final class MergeRuleTests: XCTestCase {
 
     func testRemoteTimeoutIsReportedAndKeepsLastGoodSet() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
-        let provider = FakeProvider(.success(["lifetime"]))
+        client.setCurrentEntitlements([])
+        let provider = FakeEntitlementProvider(.success(["lifetime"]))
         let log = ErrorLog()
         let store = try makeStore(client: client) {
             $0.remoteProvider = provider
             $0.remoteTimeout = 0.2
             $0.onError = log.handler
         }
-        await store.startTask.value
+        await store.startupTask.value
         XCTAssertTrue(store.isEntitled(to: "lifetime"))
 
         provider.delay = 2
-        await store.core.refreshRemote()
+        await store.engine.refreshRemote()
 
         XCTAssertTrue(store.isEntitled(to: "lifetime"))
         guard case .remoteProviderFailed(let underlying)? = log.errors.last else {
@@ -92,22 +92,22 @@ final class MergeRuleTests: XCTestCase {
 
     func testRemoteRevocationRemovesRemoteOnlyEntitlement() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
-        let provider = FakeProvider(.success(["pro.yearly"]), .success([]))
+        client.setCurrentEntitlements([])
+        let provider = FakeEntitlementProvider(.success(["pro.yearly"]), .success([]))
         let store = try makeStore(client: client) { $0.remoteProvider = provider }
-        await store.startTask.value
+        await store.startupTask.value
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
 
-        await store.core.refreshRemote()
+        await store.engine.refreshRemote()
         XCTAssertFalse(store.isEntitled(to: "pro.yearly"))
     }
 
     func testProviderNotCalledWhenAbsent() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
+        client.setCurrentEntitlements([])
         let store = try makeStore(client: client)
-        await store.startTask.value
-        await store.core.refreshRemote()
+        await store.startupTask.value
+        await store.engine.refreshRemote()
         XCTAssertTrue(store.entitlements.isEmpty)
     }
 
@@ -116,14 +116,14 @@ final class MergeRuleTests: XCTestCase {
             Entitlement(productID: "pro.monthly", subscriptionGroupID: "g", expirationDate: Date(),
                         state: .active, ownership: .purchased, source: .storeKit),
         ]
-        let merged = EntitledCore.merge(
-            local: local,
+        let merged = EntitlementEngine.merge(
+            storeKit: local,
             remote: ["pro.monthly", "lifetime"],
             catalog: ["lifetime": ProductInfo(id: "lifetime", kind: .nonConsumable, subscriptionGroupID: nil)]
         )
         XCTAssertEqual(merged.count, 2)
         XCTAssertEqual(merged.first { $0.productID == "pro.monthly" }?.source, .storeKit)
         XCTAssertEqual(merged.first { $0.productID == "lifetime" }?.source, .remote)
-        XCTAssertEqual(EntitledCore.merge(local: local, remote: [], catalog: [:]), local)
+        XCTAssertEqual(EntitlementEngine.merge(storeKit: local, remote: [], catalog: [:]), local)
     }
 }

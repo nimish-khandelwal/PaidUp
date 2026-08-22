@@ -1,5 +1,5 @@
 //
-//  EntitlementStore.swift
+//  EntitlementDiskCache.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -10,8 +10,8 @@ import Foundation
 /// Atomic JSON file holding the last-known entitlement set, so the app has
 /// the right answer on the first frame and offline. Never trusted over a
 /// fresh StoreKit answer; it only bridges the gap before one arrives.
-struct EntitlementStore: Sendable {
-    struct Snapshot: Codable, Sendable, Equatable {
+struct EntitlementDiskCache: Sendable {
+    struct CachedEntitlements: Codable, Sendable, Equatable {
         var entitlements: [Entitlement]
         var remote: [String]
         var savedAt: Date
@@ -38,19 +38,19 @@ struct EntitlementStore: Sendable {
             .appendingPathComponent(bundleID, isDirectory: true)
     }
 
-    func load() throws -> Snapshot? {
+    func load() throws -> CachedEntitlements? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(Snapshot.self, from: data)
+        return try decoder.decode(CachedEntitlements.self, from: data)
     }
 
-    func save(_ snapshot: Snapshot) throws {
+    func save(_ contents: CachedEntitlements) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(snapshot)
+        let data = try encoder.encode(contents)
         try data.write(to: fileURL, options: .atomic)
     }
 

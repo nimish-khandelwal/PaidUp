@@ -1,5 +1,5 @@
 //
-//  EntitledCore.swift
+//  EntitlementEngine.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -8,25 +8,25 @@
 import Foundation
 
 /// The single place all mutable state lives: the `Transaction.updates`
-/// listener, the local and remote entitlement sets, the cache, and the
-/// refresh chains. Everything public reads a lock-guarded snapshot this
+/// listener, the storeKitEntitlements and remoteProductIDs entitlement sets, the cache, and the
+/// refresh chains. Everything public reads a lock-guarded broadcaster this
 /// actor rewrites on every change.
-actor EntitledCore {
+actor EntitlementEngine {
     private let productIDs: Set<String>
     private let userID: UUID?
     private let config: EntitledConfiguration
     private let client: StoreKitClient
-    private let snapshot: EntitlementSnapshot
-    private let store: EntitlementStore?
+    private let broadcaster: EntitlementBroadcaster
+    private let diskCache: EntitlementDiskCache?
 
-    private var catalog: [String: ProductInfo] = [:]
-    private var local: Set<Entitlement>
-    private var remote: Set<String>
-    private var finishedIDs: Set<UInt64> = []
-    private(set) var hasStoreKitAnswer = false
+    private var productCatalog: [String: ProductInfo] = [:]
+    private var storeKitEntitlements: Set<Entitlement>
+    private var remoteProductIDs: Set<String>
+    private var finishedTransactionIDs: Set<UInt64> = []
+    private(set) var hasReceivedStoreKitAnswer = false
 
     private var listenerTask: Task<Void, Never>?
-    private var localRefreshChain: Task<Void, Never>?
+    private var storeKitRefreshChain: Task<Void, Never>?
     private var remoteRefreshChain: Task<Void, Never>?
     private var isShutDown = false
 
@@ -35,33 +35,33 @@ actor EntitledCore {
         userID: UUID?,
         config: EntitledConfiguration,
         client: StoreKitClient,
-        snapshot: EntitlementSnapshot
+        broadcaster: EntitlementBroadcaster
     ) {
         self.productIDs = products
         self.userID = userID
         self.config = config
         self.client = client
-        self.snapshot = snapshot
+        self.broadcaster = broadcaster
 
-        let directory = config.storageDirectory ?? EntitlementStore.defaultDirectory()
-        var loadedStore: EntitlementStore?
-        var cached: EntitlementStore.Snapshot?
+        let directory = config.storageDirectory ?? EntitlementDiskCache.defaultDirectory()
+        var loadedCache: EntitlementDiskCache?
+        var cached: EntitlementDiskCache.CachedEntitlements?
         do {
-            let store = try EntitlementStore(directory: directory)
-            loadedStore = store
-            cached = try store.load()
+            let diskCache = try EntitlementDiskCache(directory: directory)
+            loadedCache = diskCache
+            cached = try diskCache.load()
         } catch {
             config.onError?(.storageFailed(underlying: error))
         }
-        self.store = loadedStore
-        self.local = Set(cached?.entitlements ?? [])
-        self.remote = Set(cached?.remote ?? [])
-        snapshot.replace(with: Self.merge(local: local, remote: remote, catalog: [:]))
+        self.diskCache = loadedCache
+        self.storeKitEntitlements = Set(cached?.entitlements ?? [])
+        self.remoteProductIDs = Set(cached?.remote ?? [])
+        broadcaster.replace(with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: [:]))
     }
 
     deinit {
         listenerTask?.cancel()
-        localRefreshChain?.cancel()
+        storeKitRefreshChain?.cancel()
         remoteRefreshChain?.cancel()
     }
 
@@ -71,11 +71,11 @@ actor EntitledCore {
         listenerTask = Task { [weak self] in
             for await event in client.transactionUpdates() {
                 guard let self, !Task.isCancelled else { return }
-                await self.handle(update: event)
+                await self.handleTransactionUpdate(event)
             }
         }
-        await loadCatalog()
-        await refreshLocal()
+        await loadProductCatalog()
+        await refreshFromStoreKit()
         await refreshRemote()
     }
 
@@ -83,13 +83,13 @@ actor EntitledCore {
         isShutDown = true
         listenerTask?.cancel()
         listenerTask = nil
-        localRefreshChain?.cancel()
+        storeKitRefreshChain?.cancel()
         remoteRefreshChain?.cancel()
-        snapshot.finishAll()
+        broadcaster.finishAll()
     }
 
     func refreshAll() async {
-        await refreshLocal()
+        await refreshFromStoreKit()
         await refreshRemote()
     }
 
@@ -116,10 +116,10 @@ actor EntitledCore {
             config.onError?(.unverified(productID: productID))
             return .failed(.unverified(productID: productID))
         case .success(.verified(let tx)):
-            await refreshLocal()
+            await refreshFromStoreKit()
             await finishOnce(tx)
             await refreshRemote()
-            if let entitlement = local.first(where: { $0.productID == tx.productID }) {
+            if let entitlement = storeKitEntitlements.first(where: { $0.productID == tx.productID }) {
                 return .success(entitlement)
             }
             let state = await client.renewalState(for: tx)
@@ -136,19 +136,19 @@ actor EntitledCore {
         } catch {
             return .failed(.storeKit(underlying: error))
         }
-        await refreshLocal()
+        await refreshFromStoreKit()
         await refreshRemote()
-        return .restored(snapshot.current)
+        return .restored(broadcaster.current)
     }
 
-    func refreshLocal() async {
+    func refreshFromStoreKit() async {
         guard !isShutDown else { return }
-        let previous = localRefreshChain
+        let previous = storeKitRefreshChain
         let task = Task { [weak self] in
             await previous?.value
-            await self?.performLocalRefresh()
+            await self?.recomputeFromStoreKit()
         }
-        localRefreshChain = task
+        storeKitRefreshChain = task
         await task.value
     }
 
@@ -157,37 +157,34 @@ actor EntitledCore {
         let previous = remoteRefreshChain
         let task = Task { [weak self] in
             await previous?.value
-            await self?.performRemoteRefresh()
+            await self?.fetchRemoteEntitlements()
         }
         remoteRefreshChain = task
         await task.value
     }
 
-    var currentLocal: Set<Entitlement> { local }
-    var currentRemote: Set<String> { remote }
-    var finishedTransactionIDs: Set<UInt64> { finishedIDs }
 
-    private func handle(update event: TransactionEvent) async {
+    private func handleTransactionUpdate(_ event: TransactionEvent) async {
         switch event {
         case .verified(let tx):
-            await refreshLocal()
+            await refreshFromStoreKit()
             await finishOnce(tx)
         case .unverified(let productID):
             config.onError?(.unverified(productID: productID))
         }
     }
 
-    private func loadCatalog() async {
-        guard catalog.isEmpty, !productIDs.isEmpty else { return }
+    private func loadProductCatalog() async {
+        guard productCatalog.isEmpty, !productIDs.isEmpty else { return }
         do {
             let products = try await client.products(for: productIDs)
-            catalog = Dictionary(uniqueKeysWithValues: products.map { ($0.id, $0) })
+            productCatalog = Dictionary(uniqueKeysWithValues: products.map { ($0.id, $0) })
         } catch {
             config.onError?(.storeKit(underlying: error))
         }
     }
 
-    private func performLocalRefresh() async {
+    private func recomputeFromStoreKit() async {
         guard !Task.isCancelled else { return }
         var found: [VerifiedTransaction] = []
         for await event in client.currentEntitlements() {
@@ -210,42 +207,42 @@ actor EntitledCore {
             await finishOnce(tx)
         }
 
-        hasStoreKitAnswer = true
-        local = fresh
-        publish()
+        hasReceivedStoreKitAnswer = true
+        storeKitEntitlements = fresh
+        publishMergedEntitlements()
     }
 
-    private func performRemoteRefresh() async {
+    private func fetchRemoteEntitlements() async {
         guard let provider = config.remoteProvider, !Task.isCancelled else { return }
         do {
             let ids = try await withTimeout(config.remoteTimeout) {
                 try await provider.currentEntitlements()
             }
-            remote = ids
-            publish()
+            remoteProductIDs = ids
+            publishMergedEntitlements()
         } catch {
             config.onError?(.remoteProviderFailed(underlying: error))
         }
     }
 
     private func finishOnce(_ tx: VerifiedTransaction) async {
-        guard !finishedIDs.contains(tx.id) else { return }
-        finishedIDs.insert(tx.id)
+        guard !finishedTransactionIDs.contains(tx.id) else { return }
+        finishedTransactionIDs.insert(tx.id)
         await tx.finish()
     }
 
-    private func publish() {
-        snapshot.replace(with: Self.merge(local: local, remote: remote, catalog: catalog))
-        persist()
+    private func publishMergedEntitlements() {
+        broadcaster.replace(with: Self.merge(storeKit: storeKitEntitlements, remote: remoteProductIDs, catalog: productCatalog))
+        writeCache()
     }
 
-    private func persist() {
-        guard let store else { return }
+    private func writeCache() {
+        guard let diskCache else { return }
         do {
-            try store.save(
-                EntitlementStore.Snapshot(
-                    entitlements: Array(local),
-                    remote: Array(remote).sorted(),
+            try diskCache.save(
+                EntitlementDiskCache.CachedEntitlements(
+                    entitlements: Array(storeKitEntitlements),
+                    remote: Array(remoteProductIDs).sorted(),
                     savedAt: Date()
                 )
             )
@@ -284,17 +281,17 @@ actor EntitledCore {
     }
 
     static func merge(
-        local: Set<Entitlement>,
-        remote: Set<String>,
-        catalog: [String: ProductInfo]
+        storeKit storeKitEntitlements: Set<Entitlement>,
+        remote remoteProductIDs: Set<String>,
+        catalog productCatalog: [String: ProductInfo]
     ) -> Set<Entitlement> {
-        var result = local
-        let localIDs = Set(local.map(\.productID))
-        for id in remote where !localIDs.contains(id) {
+        var result = storeKitEntitlements
+        let storeKitProductIDs = Set(storeKitEntitlements.map(\.productID))
+        for id in remoteProductIDs where !storeKitProductIDs.contains(id) {
             result.insert(
                 Entitlement(
                     productID: id,
-                    subscriptionGroupID: catalog[id]?.subscriptionGroupID,
+                    subscriptionGroupID: productCatalog[id]?.subscriptionGroupID,
                     expirationDate: nil,
                     state: .active,
                     ownership: .purchased,

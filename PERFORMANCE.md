@@ -25,17 +25,17 @@ relocation and symbol overhead the linker removes):
 
 | Object | KB |
 | --- | --- |
-| EntitledCore | 276 |
+| EntitlementEngine | 276 |
 | LiveStoreKitClient | 120 |
 | Entitlement | 104 |
 | Entitled | 88 |
-| EntitlementStore | 76 |
-| StoreKitClient | 68 |
-| EntitlementSnapshot | 56 |
+| EntitlementDiskCache | 76 |
+| StoreKitClient + ProductInfo + VerifiedTransaction + PurchaseOutcome | 68 |
+| EntitlementBroadcaster | 56 |
 | EntitledConfiguration | 36 |
 | EntitledError | 32 |
-| Results | 24 |
-| ForegroundObserver | 12 |
+| PurchaseResult + RestoreResult | 24 |
+| AppForegroundObserver | 12 |
 | EntitlementProvider | 12 |
 
 ## Memory / ARC

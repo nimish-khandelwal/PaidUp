@@ -1,5 +1,5 @@
 //
-//  ForegroundObserver.swift
+//  AppForegroundObserver.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -10,7 +10,7 @@ import UIKit
 
 /// Re-reads StoreKit and the remote provider when the app returns to the
 /// foreground. `NotificationCenter` only — no swizzling, nothing to wire up.
-final class ForegroundObserver: @unchecked Sendable {
+final class AppForegroundObserver: @unchecked Sendable {
     private let refresh: @Sendable () async -> Void
     private var observer: NSObjectProtocol?
 

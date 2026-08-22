@@ -1,5 +1,5 @@
 //
-//  EntitlementSnapshot.swift
+//  EntitlementBroadcaster.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -7,10 +7,10 @@
 
 import Foundation
 
-/// Lock-guarded copy of the entitlement set that the actor rewrites on every
-/// change, so `isEntitled` is a synchronous read from any thread. Also fans
-/// `updates` out to every subscribed continuation.
-final class EntitlementSnapshot: @unchecked Sendable {
+/// Holds the latest entitlement set behind a lock, so `isEntitled` is a
+/// synchronous read from any thread, and broadcasts every change to all
+/// subscribed `updates` streams.
+final class EntitlementBroadcaster: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Set<Entitlement> = []
     private var continuations: [UUID: AsyncStream<Set<Entitlement>>.Continuation] = [:]

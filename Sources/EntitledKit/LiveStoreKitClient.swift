@@ -14,18 +14,18 @@ struct LiveStoreKitClient: StoreKitClient {
         try await Product.products(for: ids).map { product in
             ProductInfo(
                 id: product.id,
-                kind: Self.kind(of: product.type),
+                kind: Self.productKind(of: product.type),
                 subscriptionGroupID: product.subscription?.subscriptionGroupID
             )
         }
     }
 
     func currentEntitlements() -> AsyncStream<TransactionEvent> {
-        Self.stream(Transaction.currentEntitlements)
+        Self.makeEventStream(from: Transaction.currentEntitlements)
     }
 
     func transactionUpdates() -> AsyncStream<TransactionEvent> {
-        Self.stream(Transaction.updates)
+        Self.makeEventStream(from: Transaction.updates)
     }
 
     func renewalState(for transaction: VerifiedTransaction) async -> RenewalState? {
@@ -45,7 +45,7 @@ struct LiveStoreKitClient: StoreKitClient {
             guard case .verified(let tx) = status.transaction,
                   tx.productID == transaction.productID
             else { continue }
-            return Self.map(status.state)
+            return Self.renewalState(from: status.state)
         }
         return nil
     }
@@ -72,7 +72,7 @@ struct LiveStoreKitClient: StoreKitClient {
 
         switch result {
         case .success(let verification):
-            return .success(Self.map(verification))
+            return .success(Self.transactionEvent(from: verification))
         case .userCancelled:
             return .userCancelled
         case .pending:
@@ -86,14 +86,14 @@ struct LiveStoreKitClient: StoreKitClient {
         try await AppStore.sync()
     }
 
-    private static func stream(
-        _ source: Transaction.Transactions
+    private static func makeEventStream(
+        from source: Transaction.Transactions
     ) -> AsyncStream<TransactionEvent> {
         AsyncStream { continuation in
             let task = Task {
                 for await result in source {
                     if Task.isCancelled { break }
-                    continuation.yield(map(result))
+                    continuation.yield(transactionEvent(from: result))
                 }
                 continuation.finish()
             }
@@ -101,14 +101,14 @@ struct LiveStoreKitClient: StoreKitClient {
         }
     }
 
-    private static func map(_ result: VerificationResult<Transaction>) -> TransactionEvent {
+    private static func transactionEvent(from result: VerificationResult<Transaction>) -> TransactionEvent {
         switch result {
         case .verified(let tx):
             return .verified(
                 VerifiedTransaction(
                     id: tx.id,
                     productID: tx.productID,
-                    kind: kind(of: tx.productType),
+                    kind: productKind(of: tx.productType),
                     subscriptionGroupID: tx.subscriptionGroupID,
                     purchaseDate: tx.purchaseDate,
                     expirationDate: tx.expirationDate,
@@ -123,7 +123,7 @@ struct LiveStoreKitClient: StoreKitClient {
         }
     }
 
-    private static func kind(of type: Product.ProductType) -> ProductKind {
+    private static func productKind(of type: Product.ProductType) -> ProductKind {
         switch type {
         case .autoRenewable: return .autoRenewable
         case .nonConsumable: return .nonConsumable
@@ -131,7 +131,7 @@ struct LiveStoreKitClient: StoreKitClient {
         }
     }
 
-    private static func map(_ state: Product.SubscriptionInfo.RenewalState) -> RenewalState? {
+    private static func renewalState(from state: Product.SubscriptionInfo.RenewalState) -> RenewalState? {
         switch state {
         case .subscribed: return .subscribed
         case .inGracePeriod: return .inGracePeriod

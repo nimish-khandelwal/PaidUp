@@ -1,5 +1,5 @@
 //
-//  Results.swift
+//  PurchaseResult.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -16,12 +16,5 @@ public enum PurchaseResult: Sendable {
     /// Waiting on Ask to Buy or an SCA challenge. If approved later, the
     /// entitlement arrives through ``Entitled/updates`` automatically.
     case pending
-    case failed(EntitledError)
-}
-
-/// Outcome of ``Entitled/restore()``.
-public enum RestoreResult: Sendable {
-    /// The full entitlement set after syncing with the App Store.
-    case restored(Set<Entitlement>)
     case failed(EntitledError)
 }

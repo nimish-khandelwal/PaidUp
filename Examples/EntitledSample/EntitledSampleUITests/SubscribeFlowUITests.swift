@@ -1,5 +1,5 @@
 //
-//  SubscribeUITests.swift
+//  SubscribeFlowUITests.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -11,7 +11,7 @@ import XCTest
 /// End-to-end proof driven purely through the UI: tap *Subscribe* against the
 /// StoreKit configuration, see the PRO badge; expire the subscription behind
 /// the app's back, relaunch, and the badge is gone — cross-launch correctness.
-final class SubscribeUITests: XCTestCase {
+final class SubscribeFlowUITests: XCTestCase {
     private var session: SKTestSession!
 
     override func setUpWithError() throws {

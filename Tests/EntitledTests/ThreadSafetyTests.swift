@@ -1,5 +1,5 @@
 //
-//  ConcurrencyTests.swift
+//  ThreadSafetyTests.swift
 //  Entitled
 //
 //  Created by Nimish Khandelwal.
@@ -8,26 +8,26 @@
 import XCTest
 @testable import EntitledKit
 
-final class ConcurrencyTests: XCTestCase {
+final class ThreadSafetyTests: XCTestCase {
     func testConcurrentReadsFromManyQueuesWhileMutating() async throws {
         let client = FakeStoreKitClient()
         let tx = client.makeTransaction(id: 1, productID: "pro.monthly")
-        client.setEntitlements([tx])
+        client.setCurrentEntitlements([tx])
         let store = try makeStore(client: client)
-        await store.startTask.value
+        await store.startupTask.value
 
         let mutator = Task {
             for i in 0..<200 {
                 if i.isMultiple(of: 2) {
-                    client.setEntitlements([])
+                    client.setCurrentEntitlements([])
                 } else {
-                    client.setEntitlements([tx])
+                    client.setCurrentEntitlements([tx])
                 }
-                await store.core.refreshAll()
+                await store.engine.refreshAll()
             }
         }
 
-        let reads = ReadCounter()
+        let reads = ThreadSafeCounter()
         for queueIndex in 0..<8 {
             let queue = DispatchQueue(label: "reader-\(queueIndex)", attributes: .concurrent)
             for _ in 0..<500 {
@@ -48,14 +48,14 @@ final class ConcurrencyTests: XCTestCase {
 
     func testConcurrentPurchaseRestoreAndUpdates() async throws {
         let client = FakeStoreKitClient()
-        client.setEntitlements([])
+        client.setCurrentEntitlements([])
         let tx = client.makeTransaction(id: 1, productID: "pro.yearly")
         client.purchaseHandler = { _, _ in
-            client.setEntitlements([tx])
+            client.setCurrentEntitlements([tx])
             return .success(.verified(tx))
         }
         let store = try makeStore(client: client)
-        await store.startTask.value
+        await store.startupTask.value
 
         await withTaskGroup(of: Void.self) { group in
             for i in 0..<20 {
@@ -67,17 +67,17 @@ final class ConcurrencyTests: XCTestCase {
                     }
                 }
                 group.addTask {
-                    client.emit(.verified(tx))
+                    client.emitTransactionUpdate(.verified(tx))
                 }
             }
         }
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertTrue(store.isEntitled(to: "pro.yearly"))
-        XCTAssertEqual(client.finishedIDs, [1])
+        XCTAssertEqual(client.finishedTransactionIDs, [1])
     }
 
-    func testSnapshotIsThreadSafeUnderContention() {
-        let snapshot = EntitlementSnapshot()
+    func testBroadcasterIsThreadSafeUnderContention() {
+        let broadcaster = EntitlementBroadcaster()
         let group = DispatchGroup()
         let entitlement = Entitlement(productID: "x", subscriptionGroupID: nil, expirationDate: nil,
                                       state: .lifetime, ownership: .purchased, source: .storeKit)
@@ -86,21 +86,21 @@ final class ConcurrencyTests: XCTestCase {
             DispatchQueue.global().async {
                 for j in 0..<1000 {
                     if (i + j).isMultiple(of: 2) {
-                        snapshot.replace(with: [entitlement])
+                        broadcaster.replace(with: [entitlement])
                     } else {
-                        snapshot.replace(with: [])
+                        broadcaster.replace(with: [])
                     }
-                    _ = snapshot.current
+                    _ = broadcaster.current
                 }
                 group.leave()
             }
         }
         group.wait()
-        XCTAssertLessThanOrEqual(snapshot.current.count, 1)
+        XCTAssertLessThanOrEqual(broadcaster.current.count, 1)
     }
 }
 
-final class ReadCounter: @unchecked Sendable {
+final class ThreadSafeCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
 

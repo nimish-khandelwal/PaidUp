@@ -8,7 +8,7 @@
 import Foundation
 @testable import EntitledKit
 
-final class HarnessClient: StoreKitClient, @unchecked Sendable {
+final class HarnessStoreKitClient: StoreKitClient, @unchecked Sendable {
     private let lock = NSLock()
     private var continuations: [UUID: AsyncStream<TransactionEvent>.Continuation] = [:]
     private var entitled = true
@@ -39,7 +39,7 @@ final class HarnessClient: StoreKitClient, @unchecked Sendable {
         .success(.verified(tx(3, id, .autoRenewable)))
     }
     func sync() async throws {}
-    func emit() { for c in withLock({ Array(continuations.values) }) { c.yield(.verified(tx(1, "pro.monthly", .autoRenewable))) } }
+    func emitTransactionUpdate() { for c in withLock({ Array(continuations.values) }) { c.yield(.verified(tx(1, "pro.monthly", .autoRenewable))) } }
     func toggle() { withLock { entitled.toggle() } }
     var listeners: Int { withLock { continuations.count } }
     private func tx(_ id: UInt64, _ pid: String, _ kind: ProductKind) -> VerifiedTransaction {
@@ -50,26 +50,26 @@ final class HarnessClient: StoreKitClient, @unchecked Sendable {
     private func withLock<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
 }
 
-struct Provider: EntitlementProvider {
+struct HarnessRemoteProvider: EntitlementProvider {
     func currentEntitlements() async throws -> Set<String> { ["remote.pro"] }
 }
 
-let client = HarnessClient()
+let client = HarnessStoreKitClient()
 let dir = FileManager.default.temporaryDirectory.appendingPathComponent("LeakHarness-\(UUID().uuidString)")
 let sem = DispatchSemaphore(value: 0)
 Task {
     for cycle in 0..<50 {
         var config = EntitledConfiguration.default
         config.storageDirectory = dir
-        config.remoteProvider = Provider()
+        config.remoteProvider = HarnessRemoteProvider()
         let store = Entitled(products: ["pro.monthly", "lifetime"], userID: UUID(), configuration: config, client: client)
-        await store.startTask.value
+        await store.startupTask.value
         let stream = store.updates
         let consumer = Task { for await _ in stream {} }
         for _ in 0..<20 {
             client.toggle()
-            await store.core.refreshAll()
-            client.emit()
+            await store.engine.refreshAll()
+            client.emitTransactionUpdate()
             _ = store.isEntitled(to: "pro.monthly")
         }
         _ = await store.purchase("pro.monthly")
