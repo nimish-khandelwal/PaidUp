@@ -8,3 +8,4 @@ build/
 Pods/
 Examples/PaidUpSample/PaidUpSample.xcodeproj/
 Examples/PaidUpSample/PaidUpSample/Info.plist
+*.xcresult
