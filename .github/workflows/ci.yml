@@ -35,7 +35,7 @@ jobs:
         run: brew install xcodegen
       - name: Install simulator runtime if needed
         if: matrix.destination.os == '17.5'
-        run: xcodebuild -downloadPlatform iOS -buildVersion 17.5
+        run: sudo xcodes runtimes install "iOS 17.5" --no-color
       - name: Show available simulator runtimes
         run: xcrun simctl list runtimes
       - name: Build package for iOS

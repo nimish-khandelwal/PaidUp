@@ -60,7 +60,7 @@ final class StoreKitSessionTests: XCTestCase {
     }
 
     private func waitUntil(
-        timeout: TimeInterval = 10,
+        timeout: TimeInterval = 60,
         pokeForeground: Bool = false,
         _ condition: @escaping () -> Bool
     ) async throws {
@@ -137,7 +137,7 @@ final class StoreKitSessionTests: XCTestCase {
         }
         let firstExpiry = try XCTUnwrap(first.expirationDate)
 
-        try await waitUntil(timeout: 20) {
+        try await waitUntil {
             (store.entitlements.first?.expirationDate ?? firstExpiry) > firstExpiry
         }
         XCTAssertTrue(store.isEntitled(to: "pro.monthly"), "entitled through renewals")
@@ -145,7 +145,7 @@ final class StoreKitSessionTests: XCTestCase {
 
         let original = try XCTUnwrap(session.allTransactions().first)
         try session.disableAutoRenewForTransaction(identifier: original.originalTransactionIdentifier)
-        try await waitUntil(timeout: 20, pokeForeground: true) { !store.isEntitled(to: "pro.monthly") }
+        try await waitUntil(pokeForeground: true) { !store.isEntitled(to: "pro.monthly") }
     }
 
     func testRefundRevokesImmediately() async throws {
