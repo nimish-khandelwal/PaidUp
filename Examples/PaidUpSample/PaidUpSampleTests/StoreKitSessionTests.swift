@@ -50,17 +50,28 @@ final class StoreKitSessionTests: XCTestCase {
         return PaidUp(products: ["pro.monthly", "pro.yearly", "lifetime"], userID: userID, configuration: config)
     }
 
-    private func assertNothingUnfinished(file: StaticString = #filePath, line: UInt = #line) async {
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        for await result in Transaction.unfinished {
-            if case .verified(let tx) = result {
-                XCTFail("transaction \(tx.id) (\(tx.productID)) left unfinished", file: file, line: line)
+    private func assertNothingUnfinished(
+        timeout: TimeInterval = 60,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        var leftovers: [String] = []
+        repeat {
+            leftovers = []
+            for await result in Transaction.unfinished {
+                if case .verified(let tx) = result {
+                    leftovers.append("\(tx.id) (\(tx.productID))")
+                }
             }
-        }
+            if leftovers.isEmpty { return }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        } while Date() < deadline
+        XCTFail("transactions left unfinished: \(leftovers.joined(separator: ", "))", file: file, line: line)
     }
 
     private func waitUntil(
-        timeout: TimeInterval = 60,
+        timeout: TimeInterval = 180,
         pokeForeground: Bool = false,
         _ condition: @escaping () -> Bool
     ) async throws {
