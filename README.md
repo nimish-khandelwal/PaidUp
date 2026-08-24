@@ -5,15 +5,17 @@
 ![iOS 15+](https://img.shields.io/badge/iOS-15%2B-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)
 
-**A tiny Swift library that answers "what is this user entitled to right
-now?" from StoreKit 2 — and keeps that answer correct over time.**
+A small Swift library that answers one question for your iOS app: **what has
+this user paid for, right now?** It sits on top of StoreKit 2, keeps the
+answer correct as renewals, refunds and family-sharing changes happen, and
+gives you a simple way to read it from anywhere in the app.
 
 ```swift
 import PaidUpKit
 
 let store = PaidUp(
     products: ["pro.monthly", "pro.yearly", "lifetime"],
-    userID: currentUser.id,          // becomes appAccountToken on every purchase
+    userID: currentUser.id,   // attached to every purchase as appAccountToken
     configuration: .default
 )
 
@@ -26,105 +28,119 @@ for await entitlements in store.updates {
 let result = await store.purchase("pro.yearly")
 ```
 
-That's the whole API: `init`, `isEntitled` / `entitlements`, `updates`,
-`purchase` (+ `restore`). Zero dependencies.
+That is most of the API already. There is also `restore()`, and that's it.
+No dependencies, no backend, no UI.
 
-## The problem
+## Why I built it
 
-Every subscription app rewrites the same piece badly:
+I shipped subscriptions in a production app and kept running into the same
+StoreKit 2 traps everyone hits: the `Transaction.updates` listener that
+starts a moment too late and misses a refund, the transaction nobody
+`finish()`ed that keeps coming back, the upgrade from monthly to yearly that
+locks the user out because the code checked the old product ID, the purchase
+that was never tagged with `appAccountToken` so the server could not tell
+whose it was. None of this is hard, but it is easy to get subtly wrong, and
+every app rewrites it from scratch.
 
-- Forget to listen to `Transaction.updates` from launch → a refund, a renewal
-  or an Ask-to-Buy approval lands while no one is listening.
-- Forget to `finish()` a transaction → it comes back forever.
-- Trust an unverified transaction → a jailbroken device gets Pro for free.
-- Re-derive "expired" from dates → grace periods and billing retry are wrong
-  and the device clock becomes an attack surface.
-- Check the product ID → an upgrade from monthly to yearly locks the user out.
-- Forget `appAccountToken` once → your server can never attribute that
-  purchase to your user.
-- Read StoreKit on the main thread at launch → the paywall flashes locked.
+PaidUp is that logic extracted into a package, with the rules written down
+and tested:
 
-## The idea
-
-PaidUp is **just the entitlement layer**. Not a paywall, not a backend.
-
-1. **Listen from the first moment.** `Transaction.updates` is consumed from
-   `init` until `deinit`; nothing is missed.
-2. **Apple decides yes/no.** Entitlements come from
-   `Transaction.currentEntitlements`; the SDK never compares dates. Renewal
-   state is read only to label `.active` / `.gracePeriod`.
-3. **Verified only.** Unverified transactions are absent, and reported.
-4. **Finish exactly once.** Every transaction, including ones from a
-   previous launch.
-5. **Right on the first frame.** The last-known set is cached to disk, read
-   synchronously at `init`, and replaced the moment StoreKit answers.
-6. **Your server can add, never remove.** The optional provider hook merges
-   `union(StoreKit, remote)` for cross-platform purchases, and a server
-   outage can never lock out a user Apple says has paid.
-7. **Read from anywhere.** `isEntitled` is a synchronous, lock-guarded
-   read; all mutation lives in one actor. No singletons, no swizzling.
+- It listens to `Transaction.updates` from the moment it exists until it is
+  deallocated, so nothing lands while no one is watching.
+- Apple decides who is entitled. The answer comes from
+  `Transaction.currentEntitlements`; PaidUp never compares expiry dates
+  itself, so grace periods and billing retry behave the way Apple defines
+  them and a tampered device clock changes nothing.
+- Only cryptographically verified transactions count. Unverified ones are
+  ignored and reported through `onError`.
+- Every transaction is finished exactly once, including ones left over from
+  a previous launch.
+- The last known answer is cached on disk and loaded synchronously, so the
+  very first frame of your app shows the right thing. As soon as StoreKit
+  responds, the cache is replaced. The cache never wins over StoreKit.
+- `isEntitled` is a plain synchronous call, safe from any thread. All the
+  mutable state lives inside one actor.
 
 ## Install
 
-**Swift Package Manager**
+Swift Package Manager:
 
 ```swift
 .package(url: "https://github.com/nimish-khandelwal/PaidUp.git", from: "0.1.0")
 ```
 
-**CocoaPods**
+CocoaPods:
 
 ```ruby
 pod 'PaidUp', '~> 0.1'
 ```
 
-**Binary** — `PaidUpKit.xcframework.zip` is attached to each tagged GitHub
-release (built with `Scripts/build-xcframework.sh`).
+Prefer a binary? A `PaidUpKit.xcframework.zip` is attached to every release
+on GitHub.
 
-macOS 12 is declared only so the pure-logic tests run under `swift test`; the
-SDK targets iOS.
+(The package also declares macOS 12, but that exists only so the test suite
+runs with `swift test`. The SDK is for iOS.)
 
 ## Using it
 
+Create one instance early, for example in your `App` struct or app delegate,
+and keep it alive for the whole run:
+
 ```swift
-// 1. Create one instance and keep it alive (App / AppDelegate / root model).
 let store = PaidUp(products: products, userID: user.id, configuration: .default)
+```
 
-// 2. Ask from anywhere, any thread, no await.
-store.isEntitled(toGroup: "21000001")   // subscriptions: check the group
-store.isEntitled(to: "lifetime")        // non-consumables: check the product
+Ask whether something is unlocked. For subscriptions, check the
+*subscription group*, not the product ID. When a user upgrades from monthly
+to yearly the product ID changes but the group stays the same:
 
-// 3. React to changes — emits the current set immediately, then on every change.
+```swift
+store.isEntitled(toGroup: "21000001")   // subscriptions
+store.isEntitled(to: "lifetime")        // one-time purchases
+```
+
+React to changes. The stream gives you the current set immediately, then a
+new set every time something changes:
+
+```swift
 for await set in store.updates { render(set) }
+```
 
-// 4. Buy and restore with typed results. Nothing throws.
+Buy and restore. Nothing throws; you always get a typed result:
+
+```swift
 switch await store.purchase("pro.yearly") {
-case .success(let entitlement): …
-case .userCancelled: …
-case .pending: …                       // Ask to Buy / deferred; arrives via `updates` later
-case .failed(let error): …             // PaidUpError
+case .success(let entitlement): // unlocked, already reflected in `entitlements`
+case .userCancelled:            // user closed the payment sheet
+case .pending:                  // Ask to Buy etc. — arrives via `updates` if approved
+case .failed(let error):        // a PaidUpError telling you exactly what happened
 }
-await store.restore()                   // user-initiated button only
+
+await store.restore()   // shows an App Store prompt, so only call it from a Restore button
 ```
 
 ## Which states count as entitled
 
-| StoreKit renewal state | PaidUp? | `Entitlement.state` |
+This table is the heart of the library:
+
+| StoreKit says | Entitled? | `Entitlement.state` |
 | --- | --- | --- |
-| `subscribed` | **yes** | `.active` |
-| `inGracePeriod` | **yes** | `.gracePeriod` |
+| `subscribed` | yes | `.active` |
+| `inGracePeriod` | yes | `.gracePeriod` |
 | `inBillingRetryPeriod` (no grace) | no | — |
 | `expired` / `revoked` | no | — |
-| non-consumable, not revoked | **yes** | `.lifetime` |
-| unverified | no, + `onError(.unverified)` | — |
-| pending (Ask to Buy) | not yet; `purchase()` → `.pending` | — |
+| non-consumable, not refunded | yes | `.lifetime` |
+| unverified | no, and `onError(.unverified)` fires | — |
+| pending (Ask to Buy) | not yet; `purchase()` returns `.pending` | — |
 
-Full reasoning, Family Sharing, upgrades, offers and the remote merge rule:
-[*Which subscription states count as entitled, and why*](Sources/PaidUpKit/Documentation.docc/EntitlementStates.md).
+The longer version, including Family Sharing, upgrades and offer codes, is in
+[Which subscription states count as entitled, and why](Sources/PaidUpKit/Documentation.docc/EntitlementStates.md).
 
-## Cross-platform purchases
+## What about purchases made on Android or the web?
 
-StoreKit cannot see a Google Play subscription. Your server can. Wire it:
+StoreKit only knows about Apple purchases. If your product also sells through
+Google Play or Stripe, the only place that sees everything is your own
+server. PaidUp has a small hook for that:
 
 ```swift
 struct MyBackendProvider: EntitlementProvider {
@@ -132,66 +148,84 @@ struct MyBackendProvider: EntitlementProvider {
         try await api.get("/me/entitlements").productIDs
     }
 }
+
 var config = PaidUpConfiguration.default
 config.remoteProvider = MyBackendProvider()
 ```
 
-Read [*Cross-platform subscriptions*](Sources/PaidUpKit/Documentation.docc/CrossPlatform.md)
-for the `appAccountToken` trap and the architecture diagram.
+PaidUp then reports the union of what StoreKit and your server say. One rule
+is enforced and tested: your server can *add* entitlements but can never
+remove one StoreKit verified locally. A backend outage must never lock out a
+customer Apple says has paid.
+
+How to wire the server side, and why missing `appAccountToken` once breaks
+attribution forever: [Cross-platform subscriptions](Sources/PaidUpKit/Documentation.docc/CrossPlatform.md).
 
 ## Configuration
 
 ```swift
 var config = PaidUpConfiguration.default
-config.remoteProvider = MyBackendProvider()   // optional (default nil)
-config.remoteTimeout = 5                      // seconds (default 10)
+config.remoteProvider = MyBackendProvider()   // optional, default nil
+config.remoteTimeout = 5                      // seconds, default 10
 config.refreshOnForeground = true             // default true
-config.storageDirectory = nil                 // default App Support/PaidUp/<bundle-id>/<userID>
-config.onError = { error in print(error) }    // set this!
+config.storageDirectory = nil                 // default: App Support/PaidUp/<bundle-id>/<userID>
+config.onError = { error in print(error) }    // please set this one
 ```
 
-Errors you can get in `onError` / results: `productNotFound`, `unverified`,
-`purchaseNotAllowed`, `storeKit`, `storageFailed`, `remoteProviderFailed`.
+`onError` is where every background failure surfaces: `productNotFound`,
+`unverified`, `purchaseNotAllowed`, `storeKit`, `storageFailed`,
+`remoteProviderFailed`. PaidUp never fails silently, but it only speaks if
+you listen.
 
-## Scope
+## What it deliberately does not do
 
-**In:** auto-renewable subscriptions, non-consumables ("lifetime").
-**Out:** consumables, paywall UI, receipts / `AppTransaction`, refund
-requests, any backend.
+Consumables, paywall screens, receipt parsing, refund requests, and anything
+requiring a server. Auto-renewable subscriptions and non-consumables only.
+Keeping the scope small is the point.
 
-## Testing
+## Tests
 
-- `swift test` — 77 tests on a scripted StoreKit fake: the state table, the
-  merge rule, the cache (including shutdown mid-read), purchase/restore,
-  listener lifecycle, concurrent reads from 8 queues. Clean under
-  `--sanitize=thread` and `--sanitize=address`.
-- `Examples/PaidUpSample` — SwiftUI app with a checked-in
-  `PaidUp.storekit`, an `SKTestSession` suite (purchase, expiry,
-  accelerated renewals, refund, Ask to Buy, restore, upgrade) and an XCUITest
-  that taps *Subscribe*, asserts the PRO badge, expires the subscription,
-  relaunches and asserts it is gone. `cd Examples/PaidUpSample && xcodegen
-  generate` then ⌘U.
+- `swift test` runs 77 tests against a scripted StoreKit stand-in: the state
+  table, the merge rule, the disk cache (including the nasty case of being
+  deallocated mid-read), purchases, restores, listener lifetime, and
+  concurrent reads from eight queues at once. The suite is clean under the
+  Thread and Address Sanitizers.
+- `Examples/PaidUpSample` is a small SwiftUI app with a StoreKit
+  configuration file checked in. Its test targets talk to real StoreKit
+  through `SKTestSession`: buy, expire, refund, accelerated renewals, Ask to
+  Buy, restore, upgrade. A UI test taps Subscribe, checks the PRO badge
+  appears, expires the subscription behind the app's back, relaunches, and
+  checks the badge is gone. Run it with `cd Examples/PaidUpSample &&
+  xcodegen generate`, open the project, press Cmd-U.
 
-## Quick troubleshooting
+CI runs all of the above on every push, on two iOS simulator versions.
 
-- **User paid but still locked?** Set `onError`. `unverified` = StoreKit
-  rejected the signature. Otherwise check the group, not the product ID.
-- **Sandbox renews every 5 minutes and my logic flips?** Each renewal changes
-  `expirationDate`, so `updates` emits a new set — still entitled. Drive UI
-  from `isEntitled`, not set equality.
-- **Entitled on iPhone, not on iPad?** Same Apple ID → foreground or
-  `restore()`. Different Apple ID → that's the App Store, use Family Sharing.
-- **Paid on Android, locked on iOS?** You need the remote provider.
+## If something looks wrong
 
-Longer answers: [Troubleshooting](Sources/PaidUpKit/Documentation.docc/Troubleshooting.md).
+- **User paid but the app is locked.** Set `onError` first. If it prints
+  `unverified`, StoreKit rejected the transaction signature. If it prints
+  nothing, you are probably checking a product ID where you should be
+  checking the group.
+- **Sandbox renews every few minutes and my UI flickers.** Renewals change
+  the expiration date, so `updates` emits a new set each time. The user is
+  still entitled. Base your UI on `isEntitled`, not on comparing sets.
+- **Entitled on iPhone but not on iPad.** Same Apple ID: bring the app to the
+  foreground or tap Restore. Different Apple IDs: that is how the App Store
+  works; Family Sharing is the supported answer.
+- **Paid on Android, locked on iOS.** Expected until you wire the remote
+  provider above.
 
-## Docs
+More cases, with the reasoning: [Troubleshooting](Sources/PaidUpKit/Documentation.docc/Troubleshooting.md).
 
-Build the DocC catalog in Xcode (*Product → Build Documentation*) or read the
-articles directly under `Sources/PaidUpKit/Documentation.docc/`. See also
-[COMPATIBILITY.md](COMPATIBILITY.md), [PERFORMANCE.md](PERFORMANCE.md),
-[CHANGELOG.md](CHANGELOG.md).
+## More docs
+
+The full documentation is a DocC catalog: open the package in Xcode and hit
+*Product → Build Documentation*, or read the markdown directly in
+`Sources/PaidUpKit/Documentation.docc/`. Related reading:
+[COMPATIBILITY.md](COMPATIBILITY.md) for the support policy,
+[PERFORMANCE.md](PERFORMANCE.md) for binary size and leak measurements,
+[CHANGELOG.md](CHANGELOG.md) for history.
 
 ## License
 
-MIT.
+MIT. Do what you like with it.
